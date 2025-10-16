@@ -39,9 +39,9 @@ if __name__ == "__main__":
             "diffusers": [
                 "diffusers>=0.31.0",  # NOTE: diffusers>=0.32.0.dev is necessary for CogVideoX and Flux
             ],
-            "flash-attn": [
-                "flash-attn>=2.6.0",  # NOTE: flash-attn is necessary if ring_degree > 1
-            ],
+            # "flash-attn": [
+            #     "flash-attn>=2.6.0",  # NOTE: flash-attn is necessary if ring_degree > 1
+            # ],
             "optimum-quanto": [
                 "optimum-quanto",  # NOTE: optimum-quanto is necessary if use_fp8_t5_encoder is enabled
             ],
