@@ -42,9 +42,9 @@ if __name__ == "__main__":
             # "flash-attn": [
             #     "flash-attn>=2.6.0",  # NOTE: flash-attn is necessary if ring_degree > 1
             # ],
-            "optimum-quanto": [
-                "optimum-quanto",  # NOTE: optimum-quanto is necessary if use_fp8_t5_encoder is enabled
-            ],
+            # "optimum-quanto": [
+            #     "optimum-quanto",  # NOTE: optimum-quanto is necessary if use_fp8_t5_encoder is enabled
+            # ],
             "flask": [
                 "flask",  # NOTE: flask is necessary to run xDiT as an http service
             ],
