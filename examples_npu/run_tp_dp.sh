@@ -1,7 +1,7 @@
 set -xe
 
 torchrun --nproc_per_node=4 --start_method=spawn examples_npu/sd3_example.py \
---model /workspace/.cache/huggingface/hub/models--stabilityai--stable-diffusion-3-medium-diffusers \
+--model "stabilityai/stable-diffusion-3-medium-diffusers" \
 --height 1024 --width 1024 --no_use_resolution_binning --guidance_scale 3.5 \
 --num_inference_steps 50 \
 --warmup_steps 1 \
