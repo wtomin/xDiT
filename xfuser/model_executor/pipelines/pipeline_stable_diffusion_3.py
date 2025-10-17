@@ -353,7 +353,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                 and len(timesteps) > num_pipeline_warmup_steps
             ):
                 # * warmup stage
-                print("warmup stage starts for rank: ", get_pipeline_parallel_rank())
+                print("#################### warmup stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -364,8 +364,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
-                print("warmup stage ends for rank: ", get_pipeline_parallel_rank())
+                print("#################### warmup stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
                 # * pipefusion stage
+                print("#################### pipefusion stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
                 latents = self._async_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -376,7 +377,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
+                print("#################### pipefusion stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
             else:
+                print("#################### sync stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -388,7 +391,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                     sync_only=True,
                 )
-
+                print("#################### sync stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
         # * 8. Decode latents (only the last rank in a dp group)
 
         def vae_decode(latents):
