@@ -58,7 +58,7 @@ PARALLEL_ARGS="--pipefusion_parallel_degree 4"
 
 # export CUDA_VISIBLE_DEVICES=4,5,6,7
 
-torchrun --nproc_per_node=$N_GPUS ./examples/$SCRIPT \
+torchrun --nproc_per_node=$N_GPUS ./examples_npu/$SCRIPT \
 --model $MODEL_ID \
 $PARALLEL_ARGS \
 $TASK_ARGS \
