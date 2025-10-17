@@ -9,7 +9,7 @@ export MODEL_TYPE="Sd3"
 declare -A MODEL_CONFIGS=(
     # ["Pixart-alpha"]="pixartalpha_example.py /cfs/dit/PixArt-XL-2-1024-MS 20"
     # ["Pixart-sigma"]="pixartsigma_example.py /cfs/dit/PixArt-Sigma-XL-2-2K-MS 20"
-    ["Sd3"]="sd3_example.py /workspace/.cache/huggingface/hub/models--stabilityai--stable-diffusion-3-medium-diffusers 20"
+    ["Sd3"]="sd3_example.py stabilityai/stable-diffusion-3-medium-diffusers 20"
     # ["Flux"]="flux_example.py /cfs/dit/FLUX.1-dev/ 28"
     # ["FluxControl"]="flux_control_example.py /cfs/dit/FLUX.1-Depth-dev/ 28"
     # ["HunyuanDiT"]="hunyuandit_example.py /cfs/dit/HunyuanDiT-v1.2-Diffusers 50"
@@ -34,10 +34,10 @@ TASK_ARGS="--height 1024 --width 1024 --no_use_resolution_binning --guidance_sca
 # CACHE_ARGS="--use_fbcache"
 
 # On 8 gpus, pp=2, ulysses=2, ring=1, cfg_parallel=2 (split batch)
-N_GPUS=8
+N_GPUS=4
 # PARALLEL_ARGS="--pipefusion_parallel_degree 2 --ulysses_degree 2 --ring_degree 2"
 
-PARALLEL_ARGS="--pipefusion_parallel_degree 8"
+PARALLEL_ARGS="--pipefusion_parallel_degree 4"
 
 # CFG_ARGS="--use_cfg_parallel"
 
