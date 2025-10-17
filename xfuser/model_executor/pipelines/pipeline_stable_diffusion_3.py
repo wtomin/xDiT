@@ -28,6 +28,7 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 from xfuser.config import EngineConfig, InputConfig
 from xfuser.core.distributed import (
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     is_pipeline_first_stage,
     is_pipeline_last_stage,
     get_runtime_state,
@@ -352,6 +353,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                 and len(timesteps) > num_pipeline_warmup_steps
             ):
                 # * warmup stage
+                print("warmup stage starts for rank: ", get_pipeline_parallel_rank())
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -362,6 +364,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
+                print("warmup stage ends for rank: ", get_pipeline_parallel_rank())
                 # * pipefusion stage
                 latents = self._async_pipeline(
                     latents=latents,
