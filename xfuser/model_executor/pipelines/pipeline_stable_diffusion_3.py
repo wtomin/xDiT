@@ -638,6 +638,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
             if self.interrupt:
                 continue
             for patch_idx in range(num_pipeline_patch):
+                print("#################### timestep, patch_idx: ", i, patch_idx, "rank: ", get_pipeline_parallel_rank(), "####################")
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
@@ -672,6 +673,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         t=t,
                     )
                 )
+                print("#################### backbone forward ends for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
                 if is_pipeline_last_stage():
                     latents_dtype = patch_latents[patch_idx].dtype
                     patch_latents[patch_idx] = self._scheduler_step(
@@ -717,7 +719,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     get_pp_group().pipeline_isend(
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
-
+                print("#################### recv next starts for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
@@ -767,6 +769,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     ]
                 latents = torch.cat(latents_list, dim=-2)
         return latents
+
 
     def _backbone_forward(
         self,
