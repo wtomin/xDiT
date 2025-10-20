@@ -712,6 +712,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
                 else:
+                    if is_pipeline_first_stage() and patch_idx == num_pipeline_patch - 1:
+                        print("#################### the last patch starts for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
+                        get_pp_group().recv_next()
                     if patch_idx == 0:
                         get_pp_group().pipeline_isend(
                             next_encoder_hidden_states, name="encoder_hidden_states"
