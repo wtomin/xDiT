@@ -18,6 +18,7 @@ from xfuser.core.distributed import (
     is_dp_last_group,
     get_classifier_free_guidance_world_size,
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     get_runtime_state,
     get_cfg_group,
     get_pp_group,
@@ -523,6 +524,23 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     t=t,
                     guidance_scale=guidance_scale,
                 )
+
+                # even: recv -> isend
+                # odd: isend -> recv
+                is_received = False
+                if get_pipeline_parallel_rank() % 2 == 0:
+                    # recv nect before isend
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
+                        pass
+                    else:
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        else:
+                            get_pp_group().recv_next()
+                    is_received = True
+
                 if is_pipeline_last_stage():
                     patch_latents[patch_idx] = self._scheduler_step(
                         patch_latents[patch_idx],
@@ -539,13 +557,16 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
 
-                if is_pipeline_first_stage() and i == 0:
-                    pass
-                else:
-                    if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                if not is_received and get_pipeline_parallel_rank() % 2 == 1:
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
                         pass
                     else:
-                        get_pp_group().recv_next()
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        else:
+                            get_pp_group().recv_next()
 
                 get_runtime_state().next_patch()
 
