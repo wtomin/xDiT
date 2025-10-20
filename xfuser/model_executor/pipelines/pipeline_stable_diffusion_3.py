@@ -710,7 +710,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         i,
                         patch_idx,
                         )
-                    if is_pipeline_first_stage() and i == 0:
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
                         pass
                     else:
                         if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
@@ -778,7 +780,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         i,
                         patch_idx,
                         )
-                    if is_pipeline_first_stage() and i == 0:
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
                         pass
                     else:
                         if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
@@ -791,6 +795,8 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                                 get_pp_group().recv_next()
                             # recv latents
                             get_pp_group().recv_next()
+                    is_received = True
+                assert is_received, "is_received should be True"
 
                 get_runtime_state().next_patch()
 
