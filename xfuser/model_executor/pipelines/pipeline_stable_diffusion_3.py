@@ -26,6 +26,7 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 )
 
 from xfuser.config import EngineConfig, InputConfig
+from xfuser.logger import init_logger
 from xfuser.core.distributed import (
     get_pipeline_parallel_world_size,
     get_pipeline_parallel_rank,
@@ -43,6 +44,8 @@ from xfuser.core.distributed import (
 from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
 from ...envs import _is_npu
+
+logger = init_logger(__name__)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -353,7 +356,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                 and len(timesteps) > num_pipeline_warmup_steps
             ):
                 # * warmup stage
-                print("#################### warmup stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=warmup action=start rank=%s", get_pipeline_parallel_rank()
+                )
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -364,9 +369,13 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
-                print("#################### warmup stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=warmup action=end rank=%s", get_pipeline_parallel_rank()
+                )
                 # * pipefusion stage
-                print("#################### pipefusion stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=pipefusion action=start rank=%s", get_pipeline_parallel_rank()
+                )
                 latents = self._async_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -377,9 +386,13 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
-                print("#################### pipefusion stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=pipefusion action=end rank=%s", get_pipeline_parallel_rank()
+                )
             else:
-                print("#################### sync stage starts for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=sync action=start rank=%s", get_pipeline_parallel_rank()
+                )
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -391,7 +404,9 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                     sync_only=True,
                 )
-                print("#################### sync stage ends for rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "stage=sync action=end rank=%s", get_pipeline_parallel_rank()
+                )
         # * 8. Decode latents (only the last rank in a dp group)
 
         def vae_decode(latents):
@@ -638,7 +653,12 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
             if self.interrupt:
                 continue
             for patch_idx in range(num_pipeline_patch):
-                print("#################### timestep, patch_idx: ", i, patch_idx, "rank: ", get_pipeline_parallel_rank(), "####################")
+                logger.info(
+                    "phase=async_loop rank=%s timestep=%s patch_idx=%s",
+                    get_pipeline_parallel_rank(),
+                    i,
+                    patch_idx,
+                )
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
@@ -673,7 +693,12 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         t=t,
                     )
                 )
-                print("#################### backbone forward ends for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
+                logger.info(
+                    "phase=backbone_forward action=end rank=%s timestep=%s patch_idx=%s",
+                    get_pipeline_parallel_rank(),
+                    i,
+                    patch_idx,
+                )
                 if is_pipeline_last_stage():
                     latents_dtype = patch_latents[patch_idx].dtype
                     patch_latents[patch_idx] = self._scheduler_step(
@@ -713,7 +738,12 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         )
                 else:
                     if i != len(timesteps) - 1 and is_pipeline_first_stage() and patch_idx == num_pipeline_patch - 1:
-                        print("#################### the last patch starts for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
+                        logger.info(
+                            "phase=last_patch action=start_recv rank=%s timestep=%s patch_idx=%s",
+                            get_pipeline_parallel_rank(),
+                            i,
+                            patch_idx,
+                        )
                         get_pp_group().recv_next()
                     if patch_idx == 0:
                         get_pp_group().pipeline_isend(
@@ -722,7 +752,12 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     get_pp_group().pipeline_isend(
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
-                print("#################### recv next starts for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
+                logger.info(
+                    "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
+                    get_pipeline_parallel_rank(),
+                    i,
+                    patch_idx,
+                )
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
