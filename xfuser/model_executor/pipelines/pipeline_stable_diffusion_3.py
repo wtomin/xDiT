@@ -26,7 +26,6 @@ from diffusers.pipelines.stable_diffusion_3.pipeline_stable_diffusion_3 import (
 )
 
 from xfuser.config import EngineConfig, InputConfig
-from xfuser.logger import init_logger
 from xfuser.core.distributed import (
     get_pipeline_parallel_world_size,
     get_pipeline_parallel_rank,
@@ -45,7 +44,6 @@ from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
 from ...envs import _is_npu
 
-logger = init_logger(__name__)
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -356,9 +354,6 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                 and len(timesteps) > num_pipeline_warmup_steps
             ):
                 # * warmup stage
-                logger.info(
-                    "stage=warmup action=start rank=%s", get_pipeline_parallel_rank()
-                )
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -369,13 +364,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
-                logger.info(
-                    "stage=warmup action=end rank=%s", get_pipeline_parallel_rank()
-                )
                 # * pipefusion stage
-                logger.info(
-                    "stage=pipefusion action=start rank=%s", get_pipeline_parallel_rank()
-                )
                 latents = self._async_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -386,13 +375,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
-                logger.info(
-                    "stage=pipefusion action=end rank=%s", get_pipeline_parallel_rank()
-                )
             else:
-                logger.info(
-                    "stage=sync action=start rank=%s", get_pipeline_parallel_rank()
-                )
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -403,9 +386,6 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                     sync_only=True,
-                )
-                logger.info(
-                    "stage=sync action=end rank=%s", get_pipeline_parallel_rank()
                 )
         # * 8. Decode latents (only the last rank in a dp group)
 
@@ -653,12 +633,6 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
             if self.interrupt:
                 continue
             for patch_idx in range(num_pipeline_patch):
-                logger.info(
-                    "phase=async_loop rank=%s timestep=%s patch_idx=%s",
-                    get_pipeline_parallel_rank(),
-                    i,
-                    patch_idx,
-                )
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
@@ -693,23 +667,11 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                         t=t,
                     )
                 )
-                logger.info(
-                    "phase=backbone_forward action=end rank=%s timestep=%s patch_idx=%s",
-                    get_pipeline_parallel_rank(),
-                    i,
-                    patch_idx,
-                )
                 # even: recv -> isend
                 # odd: isend -> recv
                 is_received = False
                 if get_pipeline_parallel_rank() % 2 == 0:
                     # recv nect before isend
-                    logger.info(
-                        "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
-                        get_pipeline_parallel_rank(),
-                        i,
-                        patch_idx,
-                        )
                     if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
                         pass
                     elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
@@ -774,12 +736,6 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     )
 
                 if not is_received and get_pipeline_parallel_rank() % 2 == 1:
-                    logger.info(
-                        "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
-                        get_pipeline_parallel_rank(),
-                        i,
-                        patch_idx,
-                        )
                     if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
                         pass
                     elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
