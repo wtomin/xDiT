@@ -699,6 +699,32 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     i,
                     patch_idx,
                 )
+                # even: recv -> isend
+                # odd: isend -> recv
+                is_received = False
+                if get_pipeline_parallel_rank() % 2 == 0:
+                    # recv nect before isend
+                    logger.info(
+                        "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
+                        get_pipeline_parallel_rank(),
+                        i,
+                        patch_idx,
+                        )
+                    if is_pipeline_first_stage() and i == 0:
+                        pass
+                    else:
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        elif is_pipeline_first_stage():
+                            get_pp_group().recv_next()
+                        else:
+                            # recv encoder_hidden_state
+                            if patch_idx == num_pipeline_patch - 1:
+                                get_pp_group().recv_next()
+                            # recv latents
+                            get_pp_group().recv_next()
+                    is_received = True
+
                 if is_pipeline_last_stage():
                     latents_dtype = patch_latents[patch_idx].dtype
                     patch_latents[patch_idx] = self._scheduler_step(
@@ -737,14 +763,6 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
                 else:
-                    if i != len(timesteps) - 1 and is_pipeline_first_stage() and patch_idx == num_pipeline_patch - 1:
-                        logger.info(
-                            "phase=last_patch action=start_recv rank=%s timestep=%s patch_idx=%s",
-                            get_pipeline_parallel_rank(),
-                            i,
-                            patch_idx,
-                        )
-                        get_pp_group().recv_next()
                     if patch_idx == 0:
                         get_pp_group().pipeline_isend(
                             next_encoder_hidden_states, name="encoder_hidden_states"
@@ -752,27 +770,27 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     get_pp_group().pipeline_isend(
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
-                logger.info(
-                    "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
-                    get_pipeline_parallel_rank(),
-                    i,
-                    patch_idx,
-                )
-                if is_pipeline_first_stage() and i == 0:
-                    pass
-                else:
-                    if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+
+                if not is_received and get_pipeline_parallel_rank() % 2 == 1:
+                    logger.info(
+                        "phase=recv_next action=start_recv rank=%s timestep=%s patch_idx=%s",
+                        get_pipeline_parallel_rank(),
+                        i,
+                        patch_idx,
+                        )
+                    if is_pipeline_first_stage() and i == 0:
                         pass
-                    elif is_pipeline_first_stage() and patch_idx == 0:
-                        pass
-                    elif is_pipeline_first_stage():
-                        get_pp_group().recv_next()
                     else:
-                        # recv encoder_hidden_state
-                        if patch_idx == num_pipeline_patch - 1:
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        elif is_pipeline_first_stage():
                             get_pp_group().recv_next()
-                        # recv latents
-                        get_pp_group().recv_next()
+                        else:
+                            # recv encoder_hidden_state
+                            if patch_idx == num_pipeline_patch - 1:
+                                get_pp_group().recv_next()
+                            # recv latents
+                            get_pp_group().recv_next()
 
                 get_runtime_state().next_patch()
 
