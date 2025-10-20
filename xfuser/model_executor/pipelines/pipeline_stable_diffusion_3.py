@@ -712,7 +712,7 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
                 else:
-                    if is_pipeline_first_stage() and patch_idx == num_pipeline_patch - 1:
+                    if i != len(timesteps) - 1 and is_pipeline_first_stage() and patch_idx == num_pipeline_patch - 1:
                         print("#################### the last patch starts for rank: ", get_pipeline_parallel_rank(), "timestep, patch_idx: ", i, patch_idx, "####################")
                         get_pp_group().recv_next()
                     if patch_idx == 0:
@@ -727,6 +727,8 @@ class xFuserStableDiffusion3Pipeline(xFuserPipelineBaseWrapper):
                     pass
                 else:
                     if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and patch_idx == 0:
                         pass
                     elif is_pipeline_first_stage():
                         get_pp_group().recv_next()
