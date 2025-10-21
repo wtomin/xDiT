@@ -3,7 +3,7 @@ set -x
 export PYTHONPATH=$PWD:$PYTHONPATH
 
 # Select the model type
-export MODEL_TYPE="Sd3"
+export MODEL_TYPE="Pixart-sigma"
 # Configuration for different model types
 # script, model_id, inference_step
 declare -A MODEL_CONFIGS=(
@@ -57,6 +57,7 @@ PARALLEL_ARGS="--pipefusion_parallel_degree 4"
 # QUANTIZE_FLAG="--use_fp8_t5_encoder"
 
 # export CUDA_VISIBLE_DEVICES=4,5,6,7
+export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
 
 torchrun --nproc_per_node=$N_GPUS ./examples_npu/$SCRIPT \
 --model $MODEL_ID \
