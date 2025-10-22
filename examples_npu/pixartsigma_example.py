@@ -47,6 +47,7 @@ def main():
         guidance_scale=input_config.guidance_scale,
         generator=torch.Generator(device="npu").manual_seed(input_config.seed),
         clean_caption=False,
+        enable_profiling=True
     )
     end_time = time.time()
     elapsed_time = end_time - start_time
