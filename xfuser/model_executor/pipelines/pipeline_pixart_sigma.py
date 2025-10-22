@@ -280,54 +280,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         )
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
 
-        profile_path = os.environ.get("PROFILE_PATH", "./logs/")
-        if not os.path.exists(profile_path):
-            os.makedirs(profile_path)
-        print("Profiling enabled at rank %d" % get_world_group().rank, f", profile path: {profile_path}")
-        if envs._is_npu():
-            experimental_config = torch_npu.profiler._ExperimentalConfig(
-                export_type=[
-                    torch_npu.profiler.ExportType.Text,
-                    torch_npu.profiler.ExportType.Db
-                    ],
-                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-                msprof_tx=True,
-                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-                l2_cache=False,
-                op_attr=False,
-                data_simplification=False,
-                record_op_args=False,
-                gc_detect_threshold=None
-            )
 
-            prof = torch_npu.profiler.profile(
-                activities=[
-                    torch_npu.profiler.ProfilerActivity.NPU
-                ],
-                schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
-                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=False,
-                with_flops=False,
-                with_modules=False,
-                experimental_config=experimental_config)
-        else:
-            prof = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CUDA
-                ],
-                schedule=torch.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=False,
-                with_flops=False,
-                with_modules=False,
-            )
-        prof.start()
 
-        print("profiler, ", prof)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             if (
                 get_pipeline_parallel_world_size() > 1
@@ -348,8 +302,54 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     callback=callback,
                     callback_steps=callback_steps,
                 )
-                if prof is not None:
-                   prof.step()
+
+                profile_path = os.environ.get("PROFILE_PATH", "./logs/")
+                if not os.path.exists(profile_path):
+                    os.makedirs(profile_path)
+                print("Profiling enabled at rank %d" % get_world_group().rank, f", profile path: {profile_path}")
+                if envs._is_npu():
+                    experimental_config = torch_npu.profiler._ExperimentalConfig(
+                        export_type=[
+                            torch_npu.profiler.ExportType.Text,
+                            torch_npu.profiler.ExportType.Db
+                            ],
+                        profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                        msprof_tx=True,
+                        aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                        l2_cache=False,
+                        op_attr=False,
+                        data_simplification=False,
+                        record_op_args=False,
+                        gc_detect_threshold=None
+                    )
+
+                    prof = torch_npu.profiler.profile(
+                        activities=[
+                            torch_npu.profiler.ProfilerActivity.NPU
+                        ],
+                        schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
+                        on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=False,
+                        with_flops=False,
+                        with_modules=False,
+                        experimental_config=experimental_config)
+                else:
+                    prof = torch.profiler.profile(
+                        activities=[
+                            torch.profiler.ProfilerActivity.CUDA
+                        ],
+                        schedule=torch.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=False,
+                        with_flops=False,
+                        with_modules=False,
+                    )
+                prof.start()
+                print("profiler, ", prof)
                 # * pipefusion stage
                 torch_npu.npu.mstx().mark("async pipeline warmup stage starts")
                 latents = self._async_pipeline(
