@@ -668,8 +668,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         self.scheduler, "order", 1
                     )
                     callback(step_idx, t, patch_latents[patch_idx])
-        if profiler is not None:
-            profiler.step()
+            if profiler is not None:
+                profiler.step()
 
         latents = None
         if is_pipeline_last_stage():
