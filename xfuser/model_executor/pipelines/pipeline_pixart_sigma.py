@@ -32,6 +32,7 @@ from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
 import xfuser.envs as envs
 
+import torch_npu
 @xFuserPipelineWrapperRegister.register(PixArtSigmaPipeline)
 class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
 
@@ -79,8 +80,6 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         clean_caption: bool = True,
         use_resolution_binning: bool = True,
         max_sequence_length: int = 300,
-        enable_profiling: bool = False,
-        profile_path: str = "./profiling_data",
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -281,59 +280,61 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         )
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
 
-        if enable_profiling:
-            print("Profiling enabled at rank %d" % get_world_group().rank, f", profile path: {profile_path}")
-            if envs._is_npu():
-                import torch_npu
-                experimental_config = torch_npu.profiler._ExperimentalConfig(
-                    export_type=[
-                        torch_npu.profiler.ExportType.Text,
-                        torch_npu.profiler.ExportType.Db
-                        ],
-                    profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
-                    msprof_tx=False,
-                    aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
-                    l2_cache=False,
-                    op_attr=False,
-                    data_simplification=False,
-                    record_op_args=False,
-                    gc_detect_threshold=None
-                )
-                prof = torch_npu.profiler.profile(
-                    activities=[
-                        torch_npu.profiler.ProfilerActivity.CPU,
-                        torch_npu.profiler.ProfilerActivity.NPU
+        profile_path = os.environ.get("PROFILE_PATH", "./logs/")
+        if not os.path.exists(profile_path):
+            os.makedirs(profile_path)
+        print("Profiling enabled at rank %d" % get_world_group().rank, f", profile path: {profile_path}")
+        if envs._is_npu():
+            experimental_config = torch_npu.profiler._ExperimentalConfig(
+                export_type=[
+                    torch_npu.profiler.ExportType.Text,
+                    torch_npu.profiler.ExportType.Db
                     ],
-                    schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=1, repeat=1, skip_first=1),
-                    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
-                    record_shapes=True,
-                    profile_memory=True,
-                    with_stack=True,
-                    with_flops=False,
-                    with_modules=False,
-                    experimental_config=experimental_config)
-            else:
-                prof = torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA
-                    ],
-                    schedule=torch.profiler.schedule(wait=0, warmup=0, active=1, repeat=1, skip_first=1),
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler("./profiling_data"),
-                    record_shapes=True,
-                    profile_memory=True,
-                    with_stack=True,
-                    with_flops=False,
-                    with_modules=False,
-                )
+                profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                msprof_tx=True,
+                aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                l2_cache=False,
+                op_attr=False,
+                data_simplification=False,
+                record_op_args=False,
+                gc_detect_threshold=None
+            )
+
+            prof = torch_npu.profiler.profile(
+                activities=[
+                    torch_npu.profiler.ProfilerActivity.NPU
+                ],
+                schedule=torch_npu.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
+                on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=False,
+                with_flops=False,
+                with_modules=False,
+                experimental_config=experimental_config)
         else:
-            prof = None
+            prof = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CUDA
+                ],
+                schedule=torch.profiler.schedule(wait=0, warmup=0, active=10, repeat=1, skip_first=1),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=False,
+                with_flops=False,
+                with_modules=False,
+            )
+        prof.start()
+
+        print("profiler, ", prof)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             if (
                 get_pipeline_parallel_world_size() > 1
                 and len(timesteps) > num_pipeline_warmup_steps
             ):
                 # * warmup stage
+                torch_npu.npu.mstx().mark("sync pipeline warmup stage starts")
                 latents = self._sync_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -346,9 +347,11 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     progress_bar=progress_bar,
                     callback=callback,
                     callback_steps=callback_steps,
-                    prof=prof,
                 )
+                if prof is not None:
+                   prof.step()
                 # * pipefusion stage
+                torch_npu.npu.mstx().mark("async pipeline warmup stage starts")
                 latents = self._async_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -361,7 +364,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     progress_bar=progress_bar,
                     callback=callback,
                     callback_steps=callback_steps,
-                    prof=prof,
+                    profiler=prof,
                 )
             else:
                 latents = self._sync_pipeline(
@@ -377,8 +380,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     callback=callback,
                     callback_steps=callback_steps,
                     sync_only=True,
-                    prof=prof,
                 )
+        if prof is not None:
+            prof.stop()
 
         # * 8. Decode latents (only the last rank in a dp group)
         
@@ -456,12 +460,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         sync_only: bool = False,
-        prof = None,
     ):
         latents = self._init_sync_pipeline(latents)
         for i, t in enumerate(timesteps):
-            if i == 1 and prof is not None:
-                prof.start()
 
             if is_pipeline_last_stage():
                 last_timestep_latents = latents
@@ -503,11 +504,6 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             elif get_pipeline_parallel_world_size() > 1:
                 get_pp_group().pipeline_send(latents)
 
-            if prof is not None and i > 0:
-                prof.step()
-            if i == len(timesteps) - 1 and prof is not None:
-                prof.stop()
-
         if (
             sync_only
             and get_sequence_parallel_world_size() > 1
@@ -546,17 +542,20 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         progress_bar,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
-        prof = None,
+        profiler=None,
     ):
         if len(timesteps) == 0:
             return latents
         num_pipeline_patch = get_runtime_state().num_pipeline_patch
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
+        torch_npu.npu.mstx().mark("async_init starts")
+
         patch_latents = self._init_async_pipeline(
             num_timesteps=len(timesteps),
             latents=latents,
             num_pipeline_warmup_steps=num_pipeline_warmup_steps,
         )
+        torch_npu.npu.mstx().mark("async_init ends")
         last_patch_latents = (
             [None for _ in range(num_pipeline_patch)]
             if (is_pipeline_last_stage())
@@ -565,9 +564,6 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
 
         first_async_recv = True
         for i, t in enumerate(timesteps):
-            if i == 1 and prof is not None:
-                prof.start()
-
             for patch_idx in range(num_pipeline_patch):
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
@@ -575,12 +571,16 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
+                    torch_npu.npu.mstx().mark(f"async recv_pp starts {i + num_warmup_steps}step_{patch_idx}patch")
                     if first_async_recv:
                         get_pp_group().recv_next()
                         first_async_recv = False
                     patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(
                         idx=patch_idx
                     )
+                    torch_npu.npu.mstx().mark(f"async recv_pp ends {i + num_warmup_steps}step_{patch_idx}patch")
+                torch_npu.npu.mstx().mark(f"async computation_starts {i + num_warmup_steps}step_{patch_idx}patch")
+  
                 patch_latents[patch_idx] = self._backbone_forward(
                     latents=patch_latents[patch_idx],
                     prompt_embeds=prompt_embeds,
@@ -589,12 +589,14 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     t=t,
                     guidance_scale=guidance_scale,
                 )
+                torch_npu.npu.mstx().mark(f"async_computation ends {i + num_warmup_steps}step_{patch_idx}patch")
 
                 # even: recv -> isend
                 # odd: isend -> recv
                 is_received = False
                 if get_pipeline_parallel_rank() % 2 == 0:
                     # recv nect before isend
+                    torch_npu.npu.mstx().mark(f"async recv next starts {i + num_warmup_steps}step_{patch_idx}patch")
                     if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
                         pass
                     elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
@@ -605,24 +607,35 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         else:
                             get_pp_group().recv_next()
                     is_received = True
+                    torch_npu.npu.mstx().mark(f"async recv next ends {i + num_warmup_steps}step_{patch_idx}patch")
 
                 if is_pipeline_last_stage():
+                    torch_npu.npu.mstx().mark(f"async computation scheduler starts {i + num_warmup_steps}step_{patch_idx}patch")
+
                     patch_latents[patch_idx] = self._scheduler_step(
                         patch_latents[patch_idx],
                         last_patch_latents[patch_idx],
                         t,
                         extra_step_kwargs,
                     )
+                    torch_npu.npu.mstx().mark(f"async computation scheduler ends {i + num_warmup_steps}step_{patch_idx}patch")
+                    
+                    torch_npu.npu.mstx().mark(f"async isend starts {i + num_warmup_steps}step_{patch_idx}patch")
+
                     if i != len(timesteps) - 1:
                         get_pp_group().pipeline_isend(
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
+                    torch_npu.npu.mstx().mark(f"async isend ends {i + num_warmup_steps}step_{patch_idx}patch")
                 else:
+                    torch_npu.npu.mstx().mark(f"async isend starts {i + num_warmup_steps}step_{patch_idx}patch")
                     get_pp_group().pipeline_isend(
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
+                    torch_npu.npu.mstx().mark(f"async isend ends {i + num_warmup_steps}step_{patch_idx}patch")
 
                 if not is_received and get_pipeline_parallel_rank() % 2 == 1:
+                    torch_npu.npu.mstx().mark(f"async recv next starts {i + num_warmup_steps}step_{patch_idx}patch")
                     if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
                         pass
                     elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
@@ -632,6 +645,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                             pass
                         else:
                             get_pp_group().recv_next()
+                    torch_npu.npu.mstx().mark(f"async recv next ends {i + num_warmup_steps}step_{patch_idx}patch")
 
                 get_runtime_state().next_patch()
 
@@ -649,11 +663,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         self.scheduler, "order", 1
                     )
                     callback(step_idx, t, patch_latents[patch_idx])
-            
-            if prof is not None and i > 0:
-                prof.step()
-            if i == len(timesteps) - 1 and prof is not None:
-                prof.stop()
+        if profiler is not None:
+            profiler.step()
 
         latents = None
         if is_pipeline_last_stage():
