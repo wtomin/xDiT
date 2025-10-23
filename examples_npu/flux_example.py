@@ -70,6 +70,7 @@ def main():
         max_sequence_length=256,
         guidance_scale=input_config.guidance_scale,
         generator=torch.Generator(device="npu").manual_seed(input_config.seed),
+        enable_profiling=True,
     )
     end_time = time.time()
     elapsed_time = end_time - start_time

@@ -43,6 +43,7 @@ from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
 from ...envs import _is_npu
 
+import torch_npu
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
 
@@ -129,6 +130,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        enable_profiling: bool = False,
         **kwargs,
     ):
         r"""
@@ -307,6 +309,57 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             guidance = None
 
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
+
+        profile_path = os.environ.get("PROFILE_PATH", "./logs_flux/")
+        if not os.path.exists(profile_path):
+            os.makedirs(profile_path)
+        print("Profiling enabled at rank %d" % get_world_group().rank, f", profile path: {profile_path}")
+        if enable_profiling:
+            if _is_npu():
+                experimental_config = torch_npu.profiler._ExperimentalConfig(
+                    export_type=[
+                        torch_npu.profiler.ExportType.Text,
+                        torch_npu.profiler.ExportType.Db
+                        ],
+                    profiler_level=torch_npu.profiler.ProfilerLevel.Level1,
+                    msprof_tx=True,
+                    aic_metrics=torch_npu.profiler.AiCMetrics.PipeUtilization,
+                    l2_cache=False,
+                    op_attr=False,
+                    data_simplification=False,
+                    record_op_args=False,
+                    gc_detect_threshold=None
+                )
+
+                prof = torch_npu.profiler.profile(
+                    activities=[
+                        torch_npu.profiler.ProfilerActivity.NPU
+                    ],
+                    schedule=torch_npu.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 3, repeat=1),
+                    on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
+                    record_shapes=True,
+                    profile_memory=True,
+                    with_stack=False,
+                    with_flops=False,
+                    with_modules=False,
+                    experimental_config=experimental_config)
+            else:
+                prof = torch.profiler.profile(
+                    activities=[
+                        torch.profiler.ProfilerActivity.CUDA
+                    ],
+                    schedule=torch.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 3, repeat=1),
+                    on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
+                    record_shapes=True,
+                    profile_memory=True,
+                    with_stack=False,
+                    with_flops=False,
+                    with_modules=False,
+                )
+            prof.start()
+            print("profiler, ", prof)
+        else:
+            prof = None
         # 6. Denoising loop
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             if (
@@ -327,6 +380,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
                 )
+                if prof is not None:
+                    prof.step()
                 latents = self._async_pipeline(
                     latents=latents,
                     prompt_embeds=prompt_embeds,
@@ -339,6 +394,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     progress_bar=progress_bar,
                     callback_on_step_end=callback_on_step_end,
                     callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
+                    profiler=prof,
                 )
             else:
                 latents = self._sync_pipeline(
@@ -558,6 +614,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         progress_bar,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        profiler=None,
     ):
         if len(timesteps) == 0:
             return latents
@@ -712,7 +769,9 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 and (i + num_pipeline_warmup_steps + 1) % self.scheduler.order == 0
             ):
                 progress_bar.update()
-
+            
+            if profiler is not None:
+                profiler.step()
             if XLA_AVAILABLE:
                 xm.mark_step()
 
