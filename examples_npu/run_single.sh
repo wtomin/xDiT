@@ -10,6 +10,7 @@ declare -A MODEL_CONFIGS=(
     ["Pixart-alpha"]="pixartalpha_example.py PixArt-alpha/PixArt-XL-2-1024-MS 20"
     ["Pixart-sigma"]="pixartsigma_example.py PixArt-alpha/PixArt-Sigma-XL-2-1024-MS 20"
     ["Sd3"]="sd3_example.py stabilityai/stable-diffusion-3-medium-diffusers 20"
+    ["Flux"]="flux_example.py black-forest-labs/FLUX.1-dev 28"
 )
 
 if [[ -v MODEL_CONFIGS[$MODEL_TYPE] ]]; then

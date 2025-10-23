@@ -25,6 +25,7 @@ from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate
 from xfuser.config import EngineConfig, InputConfig
 from xfuser.core.distributed import (
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     get_runtime_state,
     get_pp_group,
     get_sequence_parallel_world_size,
@@ -616,6 +617,28 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         t=t,
                     )
                 )
+
+                # even: recv -> isend
+                # odd: isend -> recv
+                is_received = False
+                if get_pipeline_parallel_rank() % 2 == 0:
+                    # recv nect before isend
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
+                        pass 
+                    else:
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        elif is_pipeline_first_stage():
+                            get_pp_group().recv_next()
+                        else:
+                            # recv encoder_hidden_state
+                            if patch_idx == num_pipeline_patch - 1:
+                                get_pp_group().recv_next()
+                            # recv latents
+                            get_pp_group().recv_next()
+                    is_received = True
                 if is_pipeline_last_stage():
                     latents_dtype = patch_latents[patch_idx].dtype
                     patch_latents[patch_idx] = self._scheduler_step(
@@ -662,20 +685,26 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
 
-                if is_pipeline_first_stage() and i == 0:
-                    pass
-                else:
-                    if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
-                        pass
-                    elif is_pipeline_first_stage():
-                        get_pp_group().recv_next()
-                    else:
-                        # recv encoder_hidden_state
-                        if patch_idx == num_pipeline_patch - 1:
-                            get_pp_group().recv_next()
-                        # recv latents
-                        get_pp_group().recv_next()
 
+                if not is_received and get_pipeline_parallel_rank() % 2 == 1:
+                    if is_pipeline_first_stage() and i == 0 and patch_idx != num_pipeline_patch - 1:
+                        pass
+                    elif is_pipeline_first_stage() and i == 1 and patch_idx == 0:
+                        pass
+                    else:
+                        if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                            pass
+                        elif is_pipeline_first_stage():
+                            get_pp_group().recv_next()
+                        else:
+                            # recv encoder_hidden_state
+                            if patch_idx == num_pipeline_patch - 1:
+                                get_pp_group().recv_next()
+                            # recv latents
+                            get_pp_group().recv_next()
+                    is_received = True
+
+                assert is_received, "is_received should be True"
                 get_runtime_state().next_patch()
 
             if i == len(timesteps) - 1 or (
