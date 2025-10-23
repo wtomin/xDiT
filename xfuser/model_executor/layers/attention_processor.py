@@ -11,12 +11,15 @@ from diffusers.models.transformers.sana_transformer import SanaAttnProcessor2_0
 from diffusers.models.attention_processor import (
     AttnProcessor2_0,
     JointAttnProcessor2_0,
-    FluxAttnProcessor2_0,
     HunyuanAttnProcessor2_0,
     CogVideoXAttnProcessor2_0,
     SanaLinearAttnProcessor2_0,
 )
-
+import xfuser.envs as envs
+if envs._is_npu():
+    from diffusers.models.attention_processor import FluxAttnProcessor2_0_NPU
+else:
+    from diffusers.models.attention_processor import FluxAttnProcessor2_0
 try:
     from diffusers.models.transformers.transformer_hunyuan_video import (
         HunyuanVideoAttnProcessor2_0,
@@ -620,8 +623,8 @@ class xFuserJointAttnProcessor2_0(JointAttnProcessor2_0):
             return hidden_states
 
 
-@xFuserAttentionProcessorRegister.register(FluxAttnProcessor2_0)
-class xFuserFluxAttnProcessor2_0(FluxAttnProcessor2_0):
+@xFuserAttentionProcessorRegister.register(FluxAttnProcessor2_0 if not envs._is_npu() else FluxAttnProcessor2_0_NPU)
+class xFuserFluxAttnProcessor2_0(FluxAttnProcessor2_0 if not envs._is_npu() else FluxAttnProcessor2_0_NPU):
     """Attention processor used typically in processing the SD3-like self-attention projections."""
 
     def __init__(self):
