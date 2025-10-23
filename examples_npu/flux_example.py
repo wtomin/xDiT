@@ -57,7 +57,7 @@ def main():
 
     parameter_peak_memory = torch.npu.max_memory_allocated(device=f"npu:{local_rank}")
 
-    pipe.prepare_run(input_config, steps=input_config.num_inference_steps)
+    pipe.prepare_run(input_config)
 
     torch.npu.reset_peak_memory_stats()
     start_time = time.time()
