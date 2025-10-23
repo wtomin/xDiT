@@ -4,13 +4,14 @@ import subprocess
 import shlex
 from pathlib import Path
 
-os.environ["HF_HUB_CACHE"] = "/mnt/co-research/shared-models/hub"
+# os.environ["HF_HUB_CACHE"] = ""
 
 root_dir = Path(__file__).parents[2].absolute()
 #os.environ["PYTHONPATH"] = f"{WD}:{os.getenv('PYTHONPATH', '')}"
-examples_dir = root_dir / "examples"
+examples_dir = root_dir / "examples_npu"
 flux_script = examples_dir / "flux_usp_example.py"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["ASCEND_RT_VISIBLE_DEVICES"] = "0,1"
 n_gpus = 2
 
 model_id = "black-forest-labs/FLUX.1-dev"
