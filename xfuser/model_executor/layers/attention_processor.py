@@ -10,6 +10,7 @@ from diffusers.models.attention import Attention
 from diffusers.models.transformers.sana_transformer import SanaAttnProcessor2_0
 from diffusers.models.attention_processor import (
     AttnProcessor2_0,
+    FluxAttnProcessor2_0,
     JointAttnProcessor2_0,
     HunyuanAttnProcessor2_0,
     CogVideoXAttnProcessor2_0,
@@ -18,8 +19,7 @@ from diffusers.models.attention_processor import (
 import xfuser.envs as envs
 if envs._is_npu():
     from diffusers.models.attention_processor import FluxAttnProcessor2_0_NPU
-else:
-    from diffusers.models.attention_processor import FluxAttnProcessor2_0
+
 try:
     from diffusers.models.transformers.transformer_hunyuan_video import (
         HunyuanVideoAttnProcessor2_0,
@@ -158,6 +158,16 @@ class xFuserAttentionWrapper(xFuserAttentionBaseWrapper):
         latte_temporal_attention: bool = False,
     ):
         super().__init__(attention=attention)
+        # TODO: remove this 
+        
+        if envs._is_npu() and  isinstance(attention.processor, FluxAttnProcessor2_0):
+            deprecation_message = (
+                "Defaulting to FluxAttnProcessor2_0_NPU for NPU devices will be removed. Attention processors "
+                "should be set explicitly using the `set_attn_processor` method."
+            )
+            deprecate("npu_processor", "0.34.0", deprecation_message)
+            attention.processor = FluxAttnProcessor2_0_NPU()
+
         self.processor = xFuserAttentionProcessorRegister.get_processor(
             attention.processor
         )()
