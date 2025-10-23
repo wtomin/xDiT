@@ -928,6 +928,7 @@ class PipelineGroupCoordinator(GroupCoordinator):
             tensor_send_to_next=tensor, name=name, segment_idx=segment_idx
         )
         self._pipeline_isend(tensor)
+        # logger.info(f"Step {step} Rank {self.rank}: Sent {name} segment {segment_idx} to rank {self.next_rank}")
 
     def pipeline_recv(self, idx: int = -1, name: str = "latent") -> torch.Tensor:
         name = name or "latent"
@@ -939,11 +940,17 @@ class PipelineGroupCoordinator(GroupCoordinator):
         name = name or "latent"
         self.recv_tasks_queue.append((name, idx))
 
+    def add_pipeline_recv_tasks(self, idx: list[int], names: list[str] | None = None):
+        if names is None:
+            names = ["latent"] * len(idx)
+        self.recv_tasks_queue.extend([(name or "latent", i) for i, name in zip(idx, names)])
+
     def recv_next(self):
         if len(self.recv_tasks_queue) == 0:
             raise ValueError("No more tasks to receive")
         elif len(self.recv_tasks_queue) > 0:
             name, idx = self.recv_tasks_queue.pop(0)
+            # logger.info(f"Step {step} Rank {self.rank}: Post receive {name} segment {idx} to rank {self.prev_rank}")
             self._check_shape_and_buffer(recv_prev=True, name=name, segment_idx=idx)
             self.receiving_tasks.append(
                 (self._pipeline_irecv(self.recv_buffer[name][idx]), name, idx)
@@ -960,6 +967,7 @@ class PipelineGroupCoordinator(GroupCoordinator):
         assert (
             receiving_task[1] == name and receiving_task[2] == idx
         ), "Received tensor does not match the requested"
+        # logger.info(f"Step {step} Rank {self.rank}: Received {name} segment {idx} from rank {self.prev_rank}")
         return self.recv_buffer[name][idx]
 
     def _pipeline_irecv(self, tensor: torch.tensor):

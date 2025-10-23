@@ -519,16 +519,9 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 latents.split(get_runtime_state().pp_patches_height, dim=2)
             )
         else:
-            patch_latents = [
-                None for _ in range(get_runtime_state().num_pipeline_patch)
-            ]
-
-        recv_timesteps = (
-            num_timesteps - 1 if is_pipeline_first_stage() else num_timesteps
-        )
-        for _ in range(recv_timesteps):
-            for patch_idx in range(get_runtime_state().num_pipeline_patch):
-                get_pp_group().add_pipeline_recv_task(patch_idx)
+            # FIXME: works only when latents is split equally by num_pipefusion_patches
+            #  and num_pipefusion_patches = PP
+            patch_latents = list(latents.chunk(get_pp_group().world_size, dim=1))
 
         return patch_latents
 

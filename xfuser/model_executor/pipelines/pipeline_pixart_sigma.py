@@ -1,6 +1,8 @@
 import os
 from typing import Dict, List, Tuple, Callable, Optional, Union
 
+import numpy as np
+from xfuser.logger import init_logger
 import torch
 import torch.distributed
 from diffusers import PixArtSigmaPipeline
@@ -18,6 +20,7 @@ from xfuser.core.distributed import (
     is_dp_last_group,
     get_classifier_free_guidance_world_size,
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     get_runtime_state,
     get_cfg_group,
     get_pp_group,
@@ -29,6 +32,9 @@ from xfuser.core.distributed import (
 )
 from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
+
+
+logger = init_logger(__name__)
 
 
 @xFuserPipelineWrapperRegister.register(PixArtSigmaPipeline)
@@ -278,6 +284,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         )
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
 
+        # Reduce visual clutter
+        self.set_progress_bar_config(
+            disable=get_pipeline_parallel_world_size() > 1 and get_pipeline_parallel_rank() != 0)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             if (
                 get_pipeline_parallel_world_size() > 1
@@ -328,7 +337,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 )
 
         # * 8. Decode latents (only the last rank in a dp group)
-        
+
         def vae_decode(latents):
             image = self.vae.decode(
                 latents / self.vae.config.scaling_factor, return_dict=False
@@ -336,12 +345,12 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             return image
         image = None
         if not output_type == "latent":
-            if get_runtime_state().runtime_config.use_parallel_vae and get_runtime_state().parallel_config.vae_parallel_size > 0: 
+            if get_runtime_state().runtime_config.use_parallel_vae and get_runtime_state().parallel_config.vae_parallel_size > 0:
                 # VAE is loaded in another worker
                 latents = self.gather_latents_for_vae(latents)
                 if latents is not None:
                     latents = latents / self.vae.config.scaling_factor
-                self.send_to_vae_decode(latents) 
+                self.send_to_vae_decode(latents)
             else:
                 if get_runtime_state().runtime_config.use_parallel_vae:
                     latents = self.gather_broadcast_latents(latents)
@@ -349,7 +358,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 else:
                     if is_dp_last_group():
                         image = vae_decode(latents)
-            
+
         if self.is_dp_last_group():
             if not output_type == "latent":
                 if use_resolution_binning:
@@ -418,7 +427,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             elif is_pipeline_first_stage() and i == 0:
                 pass
             else:
-                latents = get_pp_group().pipeline_recv()
+                latents = get_pp_group().pipeline_recv()  # blocking recv
 
             latents = self._backbone_forward(
                 latents=latents,
@@ -444,7 +453,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             if sync_only and is_pipeline_last_stage() and i == len(timesteps) - 1:
                 pass
             elif get_pipeline_parallel_world_size() > 1:
-                get_pp_group().pipeline_send(latents)
+                get_pp_group().pipeline_send(latents)  # blocking send
 
         if (
             sync_only
@@ -500,29 +509,46 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             else None
         )
 
+        # Each device have a different order to process the patches
+        patch_indices = np.roll(range(num_pipeline_patch), get_pipeline_parallel_rank())
+
         first_async_recv = True
         for i, t in enumerate(timesteps):
-            for patch_idx in range(num_pipeline_patch):
+            # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {patch_indices}")
+            # add communication queue
+            # `is_pipeline_first_stage() and i == 0` already has the input latents from the warmup stage
+            if not (is_pipeline_first_stage() and i == 0):
+                if is_pipeline_first_stage():
+                    get_pp_group().add_pipeline_recv_tasks(patch_indices)
+                else:   # later stages use cached first patch from previous timestep
+                    get_pp_group().add_pipeline_recv_tasks(patch_indices[1:])
+
+            for ip, patch_idx in enumerate(patch_indices):
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
-                if is_pipeline_first_stage() and i == 0:
+                # always re-use the initial patch from previous timestep / warmup step (except the first stage)
+                if ip != 0 or is_pipeline_first_stage():
+                    if not (is_pipeline_first_stage() and i == 0):
+                        if not len(get_pp_group().receiving_tasks):
+                            get_pp_group().recv_next()
+                        patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(  # blocking recv
+                            idx=patch_idx
+                        )
+
+                if not is_pipeline_first_stage() and ip == 0:
+                    # TODO: cache correction
                     pass
                 else:
-                    if first_async_recv:
-                        get_pp_group().recv_next()
-                        first_async_recv = False
-                    patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(
-                        idx=patch_idx
+                    patch_latents[patch_idx] = self._backbone_forward(
+                        latents=patch_latents[patch_idx],
+                        prompt_embeds=prompt_embeds,
+                        prompt_attention_mask=prompt_attention_mask,
+                        added_cond_kwargs=added_cond_kwargs,
+                        t=t,
+                        guidance_scale=guidance_scale,
                     )
-                patch_latents[patch_idx] = self._backbone_forward(
-                    latents=patch_latents[patch_idx],
-                    prompt_embeds=prompt_embeds,
-                    prompt_attention_mask=prompt_attention_mask,
-                    added_cond_kwargs=added_cond_kwargs,
-                    t=t,
-                    guidance_scale=guidance_scale,
-                )
+
                 if is_pipeline_last_stage():
                     patch_latents[patch_idx] = self._scheduler_step(
                         patch_latents[patch_idx],
@@ -531,21 +557,16 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         extra_step_kwargs,
                     )
                     if i != len(timesteps) - 1:
-                        get_pp_group().pipeline_isend(
+                        get_pp_group().pipeline_isend(  # non-blocking send
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
-                else:
-                    get_pp_group().pipeline_isend(
+                elif ip != num_pipeline_patch - 1:  # do not send the last patch as it's used for correction in the next step
+                    get_pp_group().pipeline_isend(  # non-blocking send
                         patch_latents[patch_idx], segment_idx=patch_idx
                     )
 
-                if is_pipeline_first_stage() and i == 0:
-                    pass
-                else:
-                    if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
-                        pass
-                    else:
-                        get_pp_group().recv_next()
+                if len(get_pp_group().recv_tasks_queue):
+                    get_pp_group().recv_next()  # add receive task, non-blocking
 
                 get_runtime_state().next_patch()
 
@@ -563,6 +584,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         self.scheduler, "order", 1
                     )
                     callback(step_idx, t, patch_latents[patch_idx])
+
+            # roll the patch indices for next timestep
+            patch_indices = np.roll(patch_indices, 1 - num_pipeline_patch)
 
         latents = None
         if is_pipeline_last_stage():
