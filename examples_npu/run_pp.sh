@@ -27,7 +27,7 @@ fi
 mkdir -p ./results
 
 # task args
-TASK_ARGS="--height 1024 --width 1024 --no_use_resolution_binning --guidance_scale 3.5"
+TASK_ARGS="--height 2048 --width 2048 --no_use_resolution_binning --guidance_scale 3.5"
 
 # cache args
 # CACHE_ARGS="--use_teacache"
