@@ -557,9 +557,10 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         )
 
         # Each device have a different order to process the patches
-        patch_indices = np.roll(range(num_pipeline_patch), get_pipeline_parallel_rank())
+        patch_indices = np.roll(
+            range(num_pipeline_patch), get_pipeline_parallel_rank()
+        ).tolist()
 
-        first_async_recv = True
         for i, t in enumerate(timesteps):
             # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {patch_indices}")
             # add communication queue
@@ -580,10 +581,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
                             if not len(get_pp_group().receiving_tasks):
                                 get_pp_group().recv_next()
-                            patch_latents[
-                                patch_idx
-                            ] = get_pp_group().get_pipeline_recv_data(  # blocking recv
-                                idx=patch_idx
+                            # blocking recv
+                            patch_latents[patch_idx] = (
+                                get_pp_group().get_pipeline_recv_data(idx=patch_idx)
                             )
 
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
@@ -646,7 +646,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         callback(step_idx, t, patch_latents[patch_idx])
 
             # roll the patch indices for next timestep
-            patch_indices = np.roll(patch_indices, 1 - num_pipeline_patch)
+            patch_indices = np.roll(patch_indices, 1 - num_pipeline_patch).tolist()
 
             if profiler is not None:
                 profiler.step()

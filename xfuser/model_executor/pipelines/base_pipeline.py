@@ -68,7 +68,7 @@ logger = init_logger(__name__)
 
 class xFuserVAEWrapper:
     def __init__(
-        self, 
+        self,
         vae,
         engine_config: EngineConfig,
         dit_parallel_config: ParallelConfig,
@@ -80,10 +80,10 @@ class xFuserVAEWrapper:
         self.dtype = engine_config.runtime_config.dtype
         self.is_parallel = use_parallel
         self.dit_parallel_config = dit_parallel_config
-        self.dit_parallel_size = (dit_parallel_config.pp_degree * 
-                              dit_parallel_config.sp_degree * 
-                              dit_parallel_config.cfg_degree * 
-                              dit_parallel_config.dp_degree * 
+        self.dit_parallel_size = (dit_parallel_config.pp_degree *
+                              dit_parallel_config.sp_degree *
+                              dit_parallel_config.cfg_degree *
+                              dit_parallel_config.dp_degree *
                               dit_parallel_config.tp_degree)
         # Calculate DiT model's dp_last_group rank
         if use_parallel:
@@ -91,7 +91,7 @@ class xFuserVAEWrapper:
             sp_last = dit_parallel_config.sp_degree - 1
             cfg_last = dit_parallel_config.cfg_degree - 1
             pp_last = dit_parallel_config.pp_degree - 1
-            
+
             # Calculate rank in dp_last_group
             self.dit_last_rank = sp_last * (dit_parallel_config.cfg_degree * dit_parallel_config.pp_degree) + \
                     cfg_last * dit_parallel_config.pp_degree + pp_last
@@ -102,11 +102,11 @@ class xFuserVAEWrapper:
         logger.info("VAE found, paralleling vae...")
         vae.decoder = DecoderAdapter(vae.decoder, vae_group=get_vae_parallel_group())
         return vae
-    
+
     def reset_activation_cache(self):
         if hasattr(self.vae, "reset_activation_cache"):
             self.vae.reset_activation_cache()
-    
+
     def execute(self, output_type:str):
         if self.vae is not None:
             device = get_device(get_world_group().local_rank)
@@ -136,7 +136,7 @@ class xFuserVAEWrapper:
                 torch.distributed.broadcast(shape_tensor, src=dit_parallel_size, group=get_vae_parallel_group())
                 latents = torch.zeros(torch.Size(shape_tensor), dtype=dtype, device=device)
                 torch.distributed.broadcast(latents, src=dit_parallel_size, group=get_vae_parallel_group())
-          
+
             image = self.vae.decode(latents, return_dict=False)[0]
             image = self.image_processor.postprocess(image, output_type=output_type)
             return image
@@ -266,7 +266,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 and get_fast_attn_enable() == False
                 and get_runtime_state().parallel_config.vae_parallel_size == 0
             )
-        
+
     @staticmethod
     def check_to_use_naive_forward(func):
         @wraps(func)
@@ -443,7 +443,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
     def _convert_unet_backbone(
         self,
         unet: nn.Module,
-        enable_torch_compile: bool = False, 
+        enable_torch_compile: bool = False,
         enable_onediff: bool = False,
     ):
         # TODO() add support for torch.compile and onediff
@@ -519,9 +519,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 latents.split(get_runtime_state().pp_patches_height, dim=2)
             )
         else:
-            # FIXME: works only when latents is split equally by num_pipefusion_patches
-            #  and num_pipefusion_patches = PP
-            patch_latents = list(latents.chunk(get_pp_group().world_size, dim=1))
+            patch_latents = list(latents.chunk(get_runtime_state().num_pipeline_patch, dim=1))
 
         return patch_latents
 
@@ -586,11 +584,11 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         torch.distributed.all_gather(gathered_ranks, rank_tensor,group=get_dit_group())
         # Filter out valid ranks (non -1)
         dp_rank_list = [int(r.item()) for r in gathered_ranks if r.item() != -1]
-        
+
         if is_dp_last_group():
             # Create group for DP last ranks
             dp_last_group = torch.distributed.new_group(dp_rank_list)
-            
+
             # Gather latents to the last DP worker
             if rank == dp_rank_list[-1]:
                 latents_list = [torch.zeros_like(latents) for _ in dp_rank_list]
@@ -598,12 +596,12 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 latents = torch.cat(latents_list, dim=0)
             else:
                 torch.distributed.gather(latents, None, dst=dp_rank_list[-1], group=dp_last_group)
-            
+
         return latents
     def gather_broadcast_latents(self, latents:torch.Tensor):
         """gather latents from dp last group and broacast final latents
         """
-        
+
         # ---------gather latents from dp last group-----------
         rank = get_world_group().rank
         device = get_device(get_world_group().local_rank)
@@ -615,7 +613,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         else:
             gather_rank = -1
         torch.distributed.all_gather(dp_rank_list, torch.tensor([gather_rank],dtype=int,device=device))
-        
+
         dp_rank_list = [int(dp_rank[0]) for dp_rank in dp_rank_list if int(dp_rank[0])!=-1]
         dp_last_group = torch.distributed.new_group(dp_rank_list)
 
@@ -629,23 +627,23 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
 
         if rank == dp_rank_list[-1]:
             latents = torch.cat(latents_list,dim=0)
-        
+
         # ------broadcast latents to all nodes---------
         src = dp_rank_list[-1]
         latents_shape_len = torch.zeros(1,dtype=torch.int,device=device)
-        
+
         # broadcast latents shape len
         if rank == src:
             latents_shape_len[0] = len(latents.shape)
         get_world_group().broadcast(latents_shape_len,src=src)
-        
+
         # broadcast latents shape
         if rank == src:
             input_shape = torch.tensor(latents.shape,dtype=torch.int,device=device)
         else:
             input_shape = torch.zeros(latents_shape_len[0],dtype=torch.int,device=device)
         get_world_group().broadcast(input_shape,src=src)
-        
+
         # broadcast latents
         if rank != src:
             dtype = get_runtime_state().runtime_config.dtype
@@ -660,7 +658,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         """
         if get_runtime_state().runtime_config.use_parallel_vae and get_runtime_state().parallel_config.vae_parallel_size > 0:
             device = self._execution_device
-            if is_dp_last_group(): 
+            if is_dp_last_group():
                 # Get first VAE rank
                 vae_first_rank = get_dit_world_size()  # VAE ranks start after DiT ranks
                 # Send shape info and latents to first VAE rank
