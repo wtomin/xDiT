@@ -335,7 +335,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     activities=[
                         torch_npu.profiler.ProfilerActivity.NPU
                     ],
-                    schedule=torch_npu.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 3, repeat=1),
+                    schedule=torch_npu.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 2, repeat=1),
                     on_trace_ready=torch_npu.profiler.tensorboard_trace_handler(profile_path),
                     record_shapes=True,
                     profile_memory=True,
@@ -348,7 +348,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     activities=[
                         torch.profiler.ProfilerActivity.CUDA
                     ],
-                    schedule=torch.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 3, repeat=1),
+                    schedule=torch.profiler.schedule(wait=0, warmup=3, active=len(timesteps) - num_pipeline_warmup_steps - 2, repeat=1),
                     on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path),
                     record_shapes=True,
                     profile_memory=True,
