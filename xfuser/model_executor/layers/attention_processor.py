@@ -1,6 +1,7 @@
 import inspect
-from typing import Optional
-
+from typing import Optional, Union
+import sys
+import numpy as np
 import torch
 from torch import nn
 import torch.distributed
@@ -19,10 +20,82 @@ from diffusers.models.attention_processor import (
 import xfuser.envs as envs
 if envs._is_npu():
     from diffusers.models.attention_processor import FluxAttnProcessor2_0_NPU
+    # monkey patch for get_1d_rotary_pos_embed
+    embeddings_module = sys.modules['diffusers.models.embeddings']
+    def custom_get_1d_rotary_pos_embed(
+        dim: int,
+        pos: Union[np.ndarray, int],
+        theta: float = 10000.0,
+        use_real=False,
+        linear_factor=1.0,
+        ntk_factor=1.0,
+        repeat_interleave_real=True,
+        freqs_dtype=np.float32,  # numpy.float32, numpy.float64 (flux)
+    ):
+        r"""
+        Precompute the frequency ndarray for complex exponentials (cis) with given dimensions.
+
+        This function calculates a frequency ndarray with complex exponentials using the given dimension 'dim' and the end
+        index 'end'. The 'theta' parameter scales the frequencies. The returned ndarray contains complex values in complex64
+        data type.
+
+        Args:
+            dim (`int`): Dimension of the frequency ndarray.
+            pos (`np.ndarray` or `int`): Position indices for the frequency ndarray. [S] or scalar
+            theta (`float`, *optional*, defaults to 10000.0):
+                Scaling factor for frequency computation. Defaults to 10000.0.
+            use_real (`bool`, *optional*):
+                If True, return real part and imaginary part separately. Otherwise, return complex numbers.
+            linear_factor (`float`, *optional*, defaults to 1.0):
+                Scaling factor for the context extrapolation. Defaults to 1.0.
+            ntk_factor (`float`, *optional*, defaults to 1.0):
+                Scaling factor for the NTK-Aware RoPE. Defaults to 1.0.
+            repeat_interleave_real (`bool`, *optional*, defaults to `True`):
+                If `True` and `use_real`, real part and imaginary part are each interleaved with themselves to reach `dim`.
+                Otherwise, they are concateanted with themselves.
+            freqs_dtype (`numpy.float32` or `numpy.float64`, *optional*, defaults to `numpy.float32`):
+                the dtype of the frequency ndarray.
+        Returns:
+            `np.ndarray`: Precomputed frequency ndarray with complex exponentials. [S, D/2]
+        """
+        assert dim % 2 == 0
+        if isinstance(pos, torch.Tensor):
+            pos = pos.cpu().numpy()
+
+        # if freqs_dtype is torch dtype change it to numpy dtype
+        if isinstance(freqs_dtype, torch.dtype):
+            if freqs_dtype == torch.float32:
+                freqs_dtype = np.float32
+            elif freqs_dtype == torch.float64:
+                freqs_dtype = np.float64
+            else:
+                raise ValueError(f"Unsupported dtype for freqs_dtype: {freqs_dtype}")
+
+        if isinstance(pos, int):
+            pos = np.arange(pos)
+
+        theta = theta * ntk_factor
+        freqs = 1.0 / (theta ** (np.arange(0, dim, 2, dtype=freqs_dtype)[: (dim // 2)] / dim)) / linear_factor  # [D/2]
+        freqs = np.outer(pos, freqs)  # type: ignore   # [S, D/2]
+        if use_real and repeat_interleave_real:
+            # flux, hunyuan-dit, cogvideox
+            freqs_cos = np.cos(freqs).repeat(2, axis=1).astype(np.float32)  # [S, D]
+            freqs_sin = np.sin(freqs).repeat(2, axis=1).astype(np.float32)  # [S, D]
+            return torch.tensor(freqs_cos), torch.tensor(freqs_sin)
+        elif use_real:
+            # stable audio
+            freqs_cos = np.concatenate([np.cos(freqs), np.cos(freqs)], axis=-1).astype(np.float32)  # [S, D]
+            freqs_sin = np.concatenate([np.sin(freqs), np.sin(freqs)], axis=-1).astype(np.float32)  # [S, D]
+            return torch.tensor(freqs_cos), torch.tensor(freqs_sin)
+        else:
+            raise NotImplementedError("'use_real' in `get_1d_rotary_pos_embed` must be True.")
+
+    embeddings_module.get_1d_rotary_pos_embed = custom_get_1d_rotary_pos_embed
+
 
 try:
     from diffusers.models.transformers.transformer_hunyuan_video import (
-        HunyuanVideoAttnProcessor2_0,
+   HunyuanVideoAttnProcessor2_0,
     )
 except ImportError:
     HunyuanVideoAttnProcessor2_0 = None
