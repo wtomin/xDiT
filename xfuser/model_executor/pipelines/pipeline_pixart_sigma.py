@@ -567,7 +567,16 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             # `is_pipeline_first_stage() and i == 0` already has the input latents from the warmup stage
             if not (is_pipeline_first_stage() and i == 0):
                 if is_pipeline_first_stage():
-                    get_pp_group().add_pipeline_recv_tasks(patch_indices)
+                    # last stage sends and first stage receives patches in a different order
+                    last_patch_indices = np.roll(
+                        np.roll(
+                            range(num_pipeline_patch),
+                            get_pipeline_parallel_world_size() - 1,
+                        ),
+                        i - 1,
+                    )
+                    # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {last_patch_indices} to receive")
+                    get_pp_group().add_pipeline_recv_tasks(last_patch_indices.tolist())
                 else:  # later stages use cached first patch from previous timestep
                     get_pp_group().add_pipeline_recv_tasks(patch_indices[1:])
 
@@ -579,8 +588,10 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 if ip != 0 or is_pipeline_first_stage():
                     if not (is_pipeline_first_stage() and i == 0):
                         with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                            if not len(get_pp_group().receiving_tasks):
-                                get_pp_group().recv_next()
+                            # get first n - 1 patches (the last one is still calculated)
+                            if not len(get_pp_group().receiving_tasks["latent"]):
+                                for _ in range(num_pipeline_patch - 1):
+                                    get_pp_group().recv_next()
                             # blocking recv
                             patch_latents[patch_idx] = (
                                 get_pp_group().get_pipeline_recv_data(idx=patch_idx)
@@ -625,7 +636,11 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
 
                 if len(get_pp_group().recv_tasks_queue):
                     with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                        get_pp_group().recv_next()  # add receive task, non-blocking
+                        if is_pipeline_first_stage():
+                            if ip == 0:  # get the last patch
+                                get_pp_group().recv_next()
+                        else:
+                            get_pp_group().recv_next()  # add receive task, non-blocking
 
                 get_runtime_state().next_patch()
 
