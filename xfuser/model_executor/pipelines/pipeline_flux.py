@@ -587,33 +587,46 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             if (is_pipeline_last_stage())
             else None
         )
-
+        original_patch_indexs = [patch_idx for patch_idx in range(get_runtime_state().num_pipeline_patch)]
         first_async_recv = True
         for i, t in enumerate(timesteps):
             if self.interrupt:
                 continue
-            for patch_idx in range(num_pipeline_patch):
+            for i_patch in range(num_pipeline_patch):
+                current_patch_indexes = np.roll(original_patch_indexs, shift=get_pipeline_parallel_rank() + i) # shift by pp_rank + timesteps
+                patch_idx = current_patch_indexes[i_patch]
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
-                    if first_async_recv:
-                        if not is_pipeline_first_stage() and patch_idx == 0:
+                    if is_pipeline_first_stage() or i_patch > 0:
+                        if first_async_recv:
+                            # if not is_pipeline_first_stage() and i_patch == 0:
+                            #     get_pp_group().recv_next()
                             get_pp_group().recv_next()
-                        get_pp_group().recv_next()
-                        first_async_recv = False
+                            first_async_recv = False
 
-                    if not is_pipeline_first_stage() and patch_idx == 0:
-                        last_encoder_hidden_states = (
-                            get_pp_group().get_pipeline_recv_data(
-                                idx=patch_idx, name="encoder_hidden_states"
-                            )
+                        # if not is_pipeline_first_stage() and i_patch == 0:
+                        #     last_encoder_hidden_states = (
+                        #         get_pp_group().get_pipeline_recv_data(
+                        #             idx=patch_idx, name="encoder_hidden_states"
+                        #         )
+                        #     )
+                        patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(
+                            idx=patch_idx
                         )
-                    patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(
-                        idx=patch_idx
-                    )
+                    else: # the first patch in the non-first stage, so we need to use the cached input latent
+                        if first_async_recv:
+                            get_pp_group().recv_next()
+                            first_async_recv = False
+                        last_encoder_hidden_states = (
+                                get_pp_group().get_pipeline_recv_data(
+                                    idx=patch_idx, name="encoder_hidden_states"
+                                )
+                            )
+                        patch_latents[patch_idx] = self.pp_inputs_latents[patch_idx]
 
                 # cache the input latents for the current pipeline
                 if get_pipeline_parallel_world_size() > 1:
@@ -673,29 +686,32 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
                 else:
-                    if patch_idx == 0:
+                    if i_patch == 0:
                         get_pp_group().pipeline_isend(
                             next_encoder_hidden_states, name="encoder_hidden_states"
                         )
-                    get_pp_group().pipeline_isend(
-                        patch_latents[patch_idx], segment_idx=patch_idx
-                    )
+                    if i_patch != num_pipeline_patch - 1:
+                        get_pp_group().pipeline_isend(
+                            patch_latents[patch_idx], segment_idx=patch_idx
+                        )
 
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
-                    if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
+                    if i == len(timesteps) - 1 and i_patch == num_pipeline_patch - 1:
                         pass
                     elif is_pipeline_first_stage():
                         get_pp_group().recv_next()
                     else:
                         # recv encoder_hidden_state
-                        if patch_idx == num_pipeline_patch - 1:
+                        if i_patch == num_pipeline_patch - 1:
                             get_pp_group().recv_next()
-                        # recv latents
-                        get_pp_group().recv_next()
+                        else:
+                            # recv latents
+                            get_pp_group().recv_next()
+  
 
-                get_runtime_state().next_patch()
+                get_runtime_state().next_patch(patch_idx=patch_idx)
 
             if i == len(timesteps) - 1 or (
                 (i + num_pipeline_warmup_steps + 1) > num_warmup_steps
@@ -738,7 +754,10 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         num_pipeline_warmup_steps: int,
         latent_image_ids: torch.Tensor,
     ):
-        get_runtime_state().set_patched_mode(patch_mode=True)
+        original_patch_indexs = [patch_idx for patch_idx in range(get_runtime_state().num_pipeline_patch)]
+        pp_rank = get_pipeline_parallel_rank()
+        current_patch_indexes = np.roll(original_patch_indexs, shift=pp_rank)
+        get_runtime_state().set_patched_mode(patch_mode=True, initial_patch_idx=current_patch_indexes[0])
 
         if is_pipeline_first_stage():
             # get latents computed in warmup stage
@@ -768,8 +787,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         recv_timesteps = (
             num_timesteps - 1 if is_pipeline_first_stage() else num_timesteps
         )
-        original_patch_indexs = [patch_idx for patch_idx in range(get_runtime_state().num_pipeline_patch)]
-        
         if is_pipeline_first_stage():
             for i in range(recv_timesteps):
                 current_patch_indexes = np.roll(original_patch_indexs, shift=i) # shift the patch indexes to the right by i steps
@@ -777,7 +794,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     get_pp_group().add_pipeline_recv_task(patch_idx)
         else:
             for i in range(recv_timesteps):
-                pp_rank = get_pipeline_parallel_rank()
                 get_pp_group().add_pipeline_recv_task(0, "encoder_hidden_states")
                 current_patch_indexes = np.roll(original_patch_indexs, shift=i+pp_rank) # shift the patch indexes to the right by i+pp_rank steps
                 for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
