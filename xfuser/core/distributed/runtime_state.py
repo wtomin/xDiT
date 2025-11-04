@@ -232,15 +232,19 @@ class DiTRuntimeState(RuntimeState):
         self.backbone_inner_dim = backbone_inner_dim
         self.backbone_in_channel = backbone_in_channel
 
-    def set_patched_mode(self, patch_mode: bool):
+    def set_patched_mode(self, patch_mode: bool, initial_patch_idx: int = 0):
         self.patch_mode = patch_mode
-        self.pipeline_patch_idx = 0
+        self.pipeline_patch_idx = initial_patch_idx
 
-    def next_patch(self):
+    def next_patch(self, patch_idx=None):
         if self.patch_mode:
-            self.pipeline_patch_idx += 1
-            if self.pipeline_patch_idx == self.num_pipeline_patch:
-                self.pipeline_patch_idx = 0
+            if patch_idx is not None:
+                assert patch_idx < self.num_pipeline_patch, "Patch index out of range"
+                self.pipeline_patch_idx = patch_idx
+            else:
+                self.pipeline_patch_idx += 1
+                if self.pipeline_patch_idx == self.num_pipeline_patch:
+                    self.pipeline_patch_idx = 0
         else:
             self.pipeline_patch_idx = 0
 
