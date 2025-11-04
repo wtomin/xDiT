@@ -487,7 +487,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         self.pp_inputs_latents[i_patch] = patch_latents[i_patch].clone()
                     else:
                         self.pp_inputs_latents[i_patch].copy_(patch_latents[i_patch].clone(), True)
-                    print("pp cache initialized in rank", get_pipeline_parallel_rank(), "patch", i_patch)
 
             latents, encoder_hidden_state = self._backbone_forward(
                 latents=latents,
