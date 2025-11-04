@@ -957,6 +957,8 @@ class PipelineGroupCoordinator(GroupCoordinator):
         ), "No tasks to receive, call add_pipeline_recv_task first"
         receiving_task = self.receiving_tasks.pop(0)
         receiving_task[0].wait()
+        if receiving_task[1] != name or receiving_task[2] != idx:
+            print("Received tensor does not match the requested in rank", self.rank, "name", receiving_task[1], "idx", receiving_task[2], "expected name", name, "expected idx", idx)
         assert (
             receiving_task[1] == name and receiving_task[2] == idx
         ), "Received tensor does not match the requested"
