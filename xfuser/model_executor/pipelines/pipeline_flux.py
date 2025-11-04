@@ -800,6 +800,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
                     get_pp_group().add_pipeline_recv_task(patch_idx)
 
+        print("recv tasks added in rank", get_pipeline_parallel_rank(), "recv tasks", get_pp_group().recv_tasks_queue)
+
         return patch_latents, patch_latent_image_ids
 
     def _backbone_forward(
