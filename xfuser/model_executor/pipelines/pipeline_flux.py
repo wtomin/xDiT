@@ -78,6 +78,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         warmup_steps = get_runtime_state().runtime_config.warmup_steps
         get_runtime_state().runtime_config.warmup_steps = sync_steps
         device = "npu" if _is_npu() else "cuda"
+        self.pp_inputs_latents = [None for _ in range(get_runtime_state().num_pipeline_patch)] # cache for the input patch latent for the current pipeline 
+        
         self.__call__(
             height=input_config.height,
             width=input_config.width,
@@ -474,6 +476,17 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             #     guidance = guidance.expand(latents.shape[0])
             # else:
             #     guidance = None
+
+            # cache the input latents for the current pipeline
+            if get_pipeline_parallel_world_size() > 1:
+                patch_latents = list(
+                latents.split(get_runtime_state().pp_patches_token_num, dim=-2)
+               )
+                for i_patch in range(get_runtime_state().num_pipeline_patch):
+                    if self.pp_inputs_latents[i_patch] is None:
+                        self.pp_inputs_latents[i_patch] = patch_latents[i_patch].clone()
+                    else:
+                        self.pp_inputs_latents[i_patch].copy_(patch_latents[i_patch].clone(), True)
 
             latents, encoder_hidden_state = self._backbone_forward(
                 latents=latents,
