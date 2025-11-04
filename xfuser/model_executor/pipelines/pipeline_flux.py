@@ -615,6 +615,11 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         idx=patch_idx
                     )
 
+                # cache the input latents for the current pipeline
+                if get_pipeline_parallel_world_size() > 1:
+                    assert self.pp_inputs_latents[patch_idx] is not None, "Must have cached patent inputs, but found None! Please synchronize the pipeline first."
+                    self.pp_inputs_latents[patch_idx].copy_(patch_latents[patch_idx].clone(), True)
+
                 patch_latents[patch_idx], next_encoder_hidden_states = (
                     self._backbone_forward(
                         latents=patch_latents[patch_idx],
