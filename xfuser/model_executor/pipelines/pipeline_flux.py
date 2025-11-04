@@ -487,6 +487,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         self.pp_inputs_latents[i_patch] = patch_latents[i_patch].clone()
                     else:
                         self.pp_inputs_latents[i_patch].copy_(patch_latents[i_patch].clone(), True)
+                    print("pp cache initialized in rank", get_pipeline_parallel_rank(), "patch", i_patch)
 
             latents, encoder_hidden_state = self._backbone_forward(
                 latents=latents,
@@ -794,8 +795,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     get_pp_group().add_pipeline_recv_task(patch_idx)
         else:
             for i in range(recv_timesteps):
-                get_pp_group().add_pipeline_recv_task(0, "encoder_hidden_states")
                 current_patch_indexes = np.roll(original_patch_indexs, shift=i+pp_rank) # shift the patch indexes to the right by i+pp_rank steps
+                get_pp_group().add_pipeline_recv_task(current_patch_indexes[0], "encoder_hidden_states")
                 for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
                     get_pp_group().add_pipeline_recv_task(patch_idx)
 
