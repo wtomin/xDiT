@@ -790,7 +790,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         )
         if is_pipeline_first_stage():
             for i in range(recv_timesteps):
-                current_patch_indexes = np.roll(original_patch_indexs, shift=i) # shift the patch indexes to the right by i steps
+                current_patch_indexes = np.roll(original_patch_indexs, shift=i+1) # shift the patch indexes to the right by i+1 steps
                 for patch_idx in current_patch_indexes:
                     get_pp_group().add_pipeline_recv_task(patch_idx)
         else:
