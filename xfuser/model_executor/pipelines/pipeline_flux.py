@@ -710,8 +710,11 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             # recv latents
                             get_pp_group().recv_next()
   
-
-                get_runtime_state().next_patch(patch_idx=patch_idx)
+                if i_patch < num_pipeline_patch - 1:
+                    next_patch_idx = current_patch_indexes[i_patch+1]
+                else:
+                    next_patch_idx = current_patch_indexes = np.roll(original_patch_indexs, shift=get_pipeline_parallel_rank() + i + 1)[0] 
+                get_runtime_state().next_patch(patch_idx=next_patch_idx)
 
             if i == len(timesteps) - 1 or (
                 (i + num_pipeline_warmup_steps + 1) > num_warmup_steps
