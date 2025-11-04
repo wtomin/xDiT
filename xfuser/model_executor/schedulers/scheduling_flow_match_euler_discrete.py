@@ -16,6 +16,10 @@ from .base_scheduler import xFuserSchedulerBaseWrapper
 
 @xFuserSchedulerWrappersRegister.register(FlowMatchEulerDiscreteScheduler)
 class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
+    def __init__(self, module):
+        super().__init__(module)
+        self.step_call_count = 0
+
     @xFuserSchedulerBaseWrapper.check_to_use_naive_step
     def step(
         self,
@@ -56,6 +60,7 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
                 If return_dict is `True`, [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] is
                 returned, otherwise a tuple is returned where the first element is the sample tensor.
         """
+        self.step_call_count += 1  # Increment step call count
 
         if (
             isinstance(timestep, int)
@@ -116,9 +121,9 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
         # upon completion increase step index by one
         if (
             not get_runtime_state().patch_mode
-            or get_runtime_state().pipeline_patch_idx
-            == get_runtime_state().num_pipeline_patch - 1
+            or self.step_call_count % get_runtime_state().num_pipeline_patch == 0
         ):
+            print("step call count", self.step_call_count, f"increase step index to {self._step_index + 1} at patch{get_runtime_state().pipeline_patch_idx}")
             self._step_index += 1
 
         if not return_dict:
