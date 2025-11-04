@@ -25,6 +25,7 @@ from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps, calculate
 from xfuser.config import EngineConfig, InputConfig
 from xfuser.core.distributed import (
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     get_runtime_state,
     get_pp_group,
     get_sequence_parallel_world_size,
@@ -749,15 +750,19 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         recv_timesteps = (
             num_timesteps - 1 if is_pipeline_first_stage() else num_timesteps
         )
-
+        original_patch_indexs = [patch_idx for patch_idx in range(get_runtime_state().num_pipeline_patch)]
+        
         if is_pipeline_first_stage():
-            for _ in range(recv_timesteps):
-                for patch_idx in range(get_runtime_state().num_pipeline_patch):
+            for i in range(recv_timesteps):
+                current_patch_indexes = np.roll(original_patch_indexs, shift=i) # shift the patch indexes to the right by i steps
+                for patch_idx in current_patch_indexes:
                     get_pp_group().add_pipeline_recv_task(patch_idx)
         else:
-            for _ in range(recv_timesteps):
+            for i in range(recv_timesteps):
+                pp_rank = get_pipeline_parallel_rank()
                 get_pp_group().add_pipeline_recv_task(0, "encoder_hidden_states")
-                for patch_idx in range(get_runtime_state().num_pipeline_patch):
+                current_patch_indexes = np.roll(original_patch_indexs, shift=i+pp_rank) # shift the patch indexes to the right by i+pp_rank steps
+                for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
                     get_pp_group().add_pipeline_recv_task(patch_idx)
 
         return patch_latents, patch_latent_image_ids
