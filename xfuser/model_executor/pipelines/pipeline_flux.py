@@ -654,6 +654,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         patch_latents[patch_idx],
                         last_patch_latents[patch_idx],
                         t,
+                        is_last_patch=i_patch==num_pipeline_patch-1,
                     )
 
                     if latents.dtype != latents_dtype:
@@ -802,7 +803,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
                     get_pp_group().add_pipeline_recv_task(patch_idx)
 
-        print("recv tasks added in rank", get_pipeline_parallel_rank(), "recv tasks", get_pp_group().recv_tasks_queue)
+        # print("recv tasks added in rank", get_pipeline_parallel_rank(), "recv tasks", get_pp_group().recv_tasks_queue)
 
         return patch_latents, patch_latent_image_ids
 
@@ -841,10 +842,12 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         noise_pred: torch.Tensor,
         latents: torch.Tensor,
         t: Union[float, torch.Tensor],
+        is_last_patch: bool = False,
     ):
         return self.scheduler.step(
             noise_pred,
             t,
             latents,
             return_dict=False,
+            is_last_patch=is_last_patch,
         )[0]

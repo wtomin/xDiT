@@ -18,7 +18,6 @@ from .base_scheduler import xFuserSchedulerBaseWrapper
 class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
     def __init__(self, module):
         super().__init__(module)
-        self.step_call_count = 0
 
     @xFuserSchedulerBaseWrapper.check_to_use_naive_step
     def step(
@@ -32,6 +31,7 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
         s_noise: float = 1.0,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
+        is_last_patch: bool = False,
     ) -> Union[FlowMatchEulerDiscreteSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
@@ -54,13 +54,14 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
             return_dict (`bool`):
                 Whether or not to return a [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] or
                 tuple.
+            is_last_patch (`bool`):
+                Whether the current patch is the last patch in the pipeline. Only used for pipeline parallel.
 
         Returns:
             [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] or `tuple`:
                 If return_dict is `True`, [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] is
                 returned, otherwise a tuple is returned where the first element is the sample tensor.
         """
-        self.step_call_count += 1  # Increment step call count
 
         if (
             isinstance(timestep, int)
@@ -121,9 +122,9 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
         # upon completion increase step index by one
         if (
             not get_runtime_state().patch_mode
-            or self.step_call_count % get_runtime_state().num_pipeline_patch == 0
+            or is_last_patch
         ):
-            print("step call count", self.step_call_count, f"increase step index to {self._step_index + 1} at patch{get_runtime_state().pipeline_patch_idx}")
+            print(f"increase step index to {self._step_index + 1} at patch{get_runtime_state().pipeline_patch_idx}")
             self._step_index += 1
 
         if not return_dict:
