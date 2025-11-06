@@ -593,7 +593,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             if self.interrupt:
                 continue
             for i_patch in range(num_pipeline_patch):
-                current_patch_indexes = np.roll(original_patch_indexs, shift=get_pipeline_parallel_rank() + i) # shift by pp_rank + timesteps
+                pp_rank = get_pipeline_parallel_rank()
+                current_patch_indexes = np.roll(original_patch_indexs, shift=-i+pp_rank) # shift by pp_rank + timesteps
                 patch_idx = current_patch_indexes[i_patch]
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
@@ -714,7 +715,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 if i_patch < num_pipeline_patch - 1:
                     next_patch_idx = current_patch_indexes[i_patch+1]
                 else:
-                    next_patch_idx = current_patch_indexes = np.roll(original_patch_indexs, shift=get_pipeline_parallel_rank() + i + 1)[0] 
+                    next_patch_idx = current_patch_indexes = np.roll(original_patch_indexs, shift=-(i+1)+pp_rank)[0] 
                 get_runtime_state().next_patch(patch_idx=next_patch_idx)
 
             if i == len(timesteps) - 1 or (
@@ -793,12 +794,12 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         )
         if is_pipeline_first_stage():
             for i in range(recv_timesteps):
-                current_patch_indexes = np.roll(original_patch_indexs, shift=i+1) # shift the patch indexes to the right by i+1 steps
+                current_patch_indexes = np.roll(original_patch_indexs, shift=-i) # shift the patch indexes to the right by i+1 steps
                 for patch_idx in current_patch_indexes:
                     get_pp_group().add_pipeline_recv_task(patch_idx)
         else:
             for i in range(recv_timesteps):
-                current_patch_indexes = np.roll(original_patch_indexs, shift=i+pp_rank) # shift the patch indexes to the right by i+pp_rank steps
+                current_patch_indexes = np.roll(original_patch_indexs, shift=-i+pp_rank) # shift the patch indexes to the right by i+pp_rank steps
                 get_pp_group().add_pipeline_recv_task(0, "encoder_hidden_states")
                 for patch_idx in current_patch_indexes[1:]: # the first patch is fetched from the cache
                     get_pp_group().add_pipeline_recv_task(patch_idx)
