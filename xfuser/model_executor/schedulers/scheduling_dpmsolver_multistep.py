@@ -26,6 +26,8 @@ class xFuserDPMSolverMultistepSchedulerWrapper(xFuserSchedulerBaseWrapper):
         generator=None,
         variance_noise: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        first_patch: bool = False,
+        last_patch: bool = False,
     ) -> Union[SchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the sample with
@@ -77,7 +79,7 @@ class xFuserDPMSolverMultistepSchedulerWrapper(xFuserSchedulerBaseWrapper):
         #! ---------------------------------------- MODIFIED BELOW ----------------------------------------
         if (
             get_runtime_state().patch_mode
-            and get_runtime_state().pipeline_patch_idx == 0
+            and first_patch
             and self.model_outputs[-1] is None
         ):
             self.model_outputs[-1] = torch.zeros(
@@ -90,13 +92,13 @@ class xFuserDPMSolverMultistepSchedulerWrapper(xFuserSchedulerBaseWrapper):
                 device=model_output.device,
                 dtype=model_output.dtype,
             )
-        if get_runtime_state().pipeline_patch_idx == 0:
+        if first_patch:
             for i in range(self.config.solver_order - 1):
                 self.model_outputs[i] = self.model_outputs[i + 1]
 
         if (
             get_runtime_state().patch_mode
-            and get_runtime_state().pipeline_patch_idx == 0
+            and first_patch
         ):
             assert len(self.model_outputs) >= 2
             self.model_outputs[-1] = torch.zeros_like(self.model_outputs[-2])
@@ -188,11 +190,7 @@ class xFuserDPMSolverMultistepSchedulerWrapper(xFuserSchedulerBaseWrapper):
 
         # upon completion increase step index by one
         # * increase step index only when the last pipeline patch is done (or not in patch mode)
-        if (
-            not get_runtime_state().patch_mode
-            or get_runtime_state().pipeline_patch_idx
-            == get_runtime_state().num_pipeline_patch - 1
-        ):
+        if not get_runtime_state().patch_mode or last_patch:
             self._step_index += 1
 
         if not return_dict:

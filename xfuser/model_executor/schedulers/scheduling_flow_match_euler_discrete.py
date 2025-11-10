@@ -28,6 +28,7 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
         s_noise: float = 1.0,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
+        last_patch: bool = False,
     ) -> Union[FlowMatchEulerDiscreteSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
@@ -50,6 +51,8 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
             return_dict (`bool`):
                 Whether or not to return a [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] or
                 tuple.
+            last_patch (`bool`):
+                Whether the current patch is the last patch in the pipeline. Only used for pipeline parallel.
 
         Returns:
             [`~schedulers.scheduling_euler_discrete.EulerDiscreteSchedulerOutput`] or `tuple`:
@@ -114,11 +117,7 @@ class xFuserFlowMatchEulerDiscreteSchedulerWrapper(xFuserSchedulerBaseWrapper):
         prev_sample = prev_sample.to(model_output.dtype)
 
         # upon completion increase step index by one
-        if (
-            not get_runtime_state().patch_mode
-            or get_runtime_state().pipeline_patch_idx
-            == get_runtime_state().num_pipeline_patch - 1
-        ):
+        if not get_runtime_state().patch_mode or last_patch:
             self._step_index += 1
 
         if not return_dict:

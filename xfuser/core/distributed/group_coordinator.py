@@ -1020,6 +1020,10 @@ class PipelineGroupCoordinator(GroupCoordinator):
             raise ValueError("No more tasks to receive")
         elif len(self.recv_tasks_queue) > 0:
             name, idx = self.recv_tasks_queue.pop(0)
+            if name in self.receiving_tasks and idx in self.receiving_tasks[name]:
+                logger.info("Patch idx overlap, deferring reception until the next step.")
+                self.recv_tasks_queue.insert(0, (name, idx))
+                return
             # logger.info(f"Step {step} Rank {self.rank}: Post receive {name} segment {idx} to rank {self.prev_rank}")
             self._check_shape_and_buffer(recv_prev=True, name=name, segment_idx=idx)
             self.receiving_tasks[name][idx] = self._pipeline_irecv(self.recv_buffer[name][idx])

@@ -18,6 +18,7 @@ except ModuleNotFoundError:
     pass
 
 import xfuser.envs as envs
+
 if envs._is_npu():
     from torch.npu import manual_seed as device_manual_seed
     from torch.npu import manual_seed_all as device_manual_seed_all
@@ -98,7 +99,7 @@ class UnetRuntimeState(RuntimeState):
     def __init__(self, pipeline: DiffusionPipeline, config: EngineConfig):
         super().__init__(config)
         self.sanity_check()
-    
+
     def sanity_check(self):
         if self.parallel_config.world_size > 1:
             if not(self.parallel_config.cfg_degree == 2 and self.parallel_config.world_size == 2):
@@ -232,15 +233,19 @@ class DiTRuntimeState(RuntimeState):
         self.backbone_inner_dim = backbone_inner_dim
         self.backbone_in_channel = backbone_in_channel
 
-    def set_patched_mode(self, patch_mode: bool):
+    def set_patched_mode(self, patch_mode: bool, initial_patch_idx: int = 0):
         self.patch_mode = patch_mode
-        self.pipeline_patch_idx = 0
+        self.pipeline_patch_idx = initial_patch_idx
 
-    def next_patch(self):
+    def next_patch(self, patch_idx: int | None = None):
         if self.patch_mode:
-            self.pipeline_patch_idx += 1
-            if self.pipeline_patch_idx == self.num_pipeline_patch:
-                self.pipeline_patch_idx = 0
+            if patch_idx is not None:
+                assert patch_idx < self.num_pipeline_patch, "Patch index out of range"
+                self.pipeline_patch_idx = patch_idx
+            else:
+                self.pipeline_patch_idx += 1
+                if self.pipeline_patch_idx == self.num_pipeline_patch:
+                    self.pipeline_patch_idx = 0
         else:
             self.pipeline_patch_idx = 0
 
@@ -680,4 +685,3 @@ def initialize_runtime_state(pipeline: DiffusionPipeline, engine_config: EngineC
         _RUNTIME = DiTRuntimeState(pipeline=pipeline, config=engine_config)
     elif hasattr(pipeline, "unet"):
         _RUNTIME = UnetRuntimeState(pipeline=pipeline, config=engine_config)
-

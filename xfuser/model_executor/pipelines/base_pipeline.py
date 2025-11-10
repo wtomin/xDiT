@@ -501,8 +501,6 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         latents: torch.Tensor,
         num_pipeline_warmup_steps: int,
     ):
-        get_runtime_state().set_patched_mode(patch_mode=True)
-
         if is_pipeline_first_stage():
             # get latents computed in warmup stage
             # ignore latents after the last timestep
@@ -520,6 +518,9 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
             )
         else:
             patch_latents = list(latents.chunk(get_runtime_state().num_pipeline_patch, dim=1))
+
+        if is_pipeline_last_stage():
+            self._prev_inputs = list(self._prev_inputs.chunk(get_runtime_state().num_pipeline_patch, dim=1))
 
         return patch_latents
 

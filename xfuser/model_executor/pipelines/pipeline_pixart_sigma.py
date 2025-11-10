@@ -432,6 +432,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         latents: torch.Tensor,
         t: Union[float, torch.Tensor],
         extra_step_kwargs: Dict,
+        first_patch: bool = False,
+        last_patch: bool = False,
     ):
         # compute previous image: x_t -> x_t-1
         return self.scheduler.step(
@@ -440,6 +442,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             latents,
             **extra_step_kwargs,
             return_dict=False,
+            first_patch=first_patch,
+            last_patch=last_patch,
         )[0]
 
     # synchronized compute the whole feature map in each pp stage
@@ -474,6 +478,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             else:
                 latents = get_pp_group().pipeline_recv()  # blocking recv
 
+            if is_pipeline_last_stage():
+                self._prev_inputs = latents.clone()
             latents = self._backbone_forward(
                 latents=latents,
                 prompt_embeds=prompt_embeds,
@@ -485,7 +491,15 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
 
             if is_pipeline_last_stage():
                 latents = self._scheduler_step(
-                    latents, last_timestep_latents, t, extra_step_kwargs
+                    latents,
+                    last_timestep_latents,
+                    t,
+                    extra_step_kwargs,
+                    first_patch=get_runtime_state().pipeline_patch_idx == 0,
+                    last_patch=(
+                        get_runtime_state().pipeline_patch_idx
+                        == get_runtime_state().num_pipeline_patch - 1
+                    ),
                 )
             if i == len(timesteps) - 1 or (
                 (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
@@ -560,48 +574,62 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         patch_indices = np.roll(
             range(num_pipeline_patch), get_pipeline_parallel_rank()
         ).tolist()
+        get_runtime_state().set_patched_mode(
+            patch_mode=True, initial_patch_idx=patch_indices[0]
+        )
 
         for i, t in enumerate(timesteps):
             # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {patch_indices}")
             # add communication queue
-            # `is_pipeline_first_stage() and i == 0` already has the input latents from the warmup stage
-            if not (is_pipeline_first_stage() and i == 0):
-                if is_pipeline_first_stage():
-                    # last stage sends and first stage receives patches in a different order
-                    last_patch_indices = np.roll(
-                        np.roll(
-                            range(num_pipeline_patch),
-                            get_pipeline_parallel_world_size() - 1,
-                        ),
-                        i - 1,
-                    )
-                    # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {last_patch_indices} to receive")
-                    get_pp_group().add_pipeline_recv_tasks(last_patch_indices.tolist())
-                else:  # later stages use cached first patch from previous timestep
-                    get_pp_group().add_pipeline_recv_tasks(patch_indices[1:])
+            if is_pipeline_first_stage() and i != len(timesteps) - 1:
+                # last stage sends and first stage receives patches in a different order
+                last_patch_indices = np.roll(
+                    np.roll(
+                        range(num_pipeline_patch),
+                        get_pipeline_parallel_world_size() - 1,
+                    ),
+                    i,
+                )
+                get_pp_group().add_pipeline_recv_tasks(last_patch_indices.tolist())
+            # later stages use cached first patch from previous timestep
+            elif not is_pipeline_first_stage():
+                get_pp_group().add_pipeline_recv_tasks(patch_indices[1:])
+            # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {get_pp_group().recv_tasks_queue}")
 
             for ip, patch_idx in enumerate(patch_indices):
+                get_runtime_state().next_patch(patch_idx)
+
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
                 # always re-use the initial patch from previous timestep / warmup step (except the first stage)
-                if ip != 0 or is_pipeline_first_stage():
-                    if not (is_pipeline_first_stage() and i == 0):
-                        with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                            # get first n - 1 patches (the last one is still calculated)
-                            if not len(get_pp_group().receiving_tasks["latent"]):
-                                for _ in range(num_pipeline_patch - 1):
-                                    get_pp_group().recv_next()
-                            # blocking recv
-                            patch_latents[patch_idx] = (
-                                get_pp_group().get_pipeline_recv_data(idx=patch_idx)
-                            )
+                if (not is_pipeline_first_stage() and ip != 0) or (
+                    is_pipeline_first_stage() and i != 0
+                ):
+                    with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
+                        # blocking recv
+                        patch_latents[patch_idx] = (
+                            get_pp_group().get_pipeline_recv_data(idx=patch_idx)
+                        )
 
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
-                    if not is_pipeline_first_stage() and ip == 0:
-                        # TODO: cache correction
+                    if not is_pipeline_last_stage() and ip == num_pipeline_patch - 1:
+                        # TODO: correct cached patches
                         pass
+                    elif is_pipeline_last_stage() and ip == 0:
+                        patch_latents[patch_idx] = self._backbone_forward(
+                            latents=self._prev_inputs[patch_idx],
+                            prompt_embeds=prompt_embeds,
+                            prompt_attention_mask=prompt_attention_mask,
+                            added_cond_kwargs=added_cond_kwargs,
+                            t=t,
+                            guidance_scale=guidance_scale,
+                        )
                     else:
+                        if is_pipeline_last_stage():
+                            self._prev_inputs[patch_idx] = patch_latents[
+                                patch_idx
+                            ].clone()
                         patch_latents[patch_idx] = self._backbone_forward(
                             latents=patch_latents[patch_idx],
                             prompt_embeds=prompt_embeds,
@@ -620,6 +648,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                             last_patch_latents[patch_idx],
                             t,
                             extra_step_kwargs,
+                            first_patch=ip == 0,
+                            last_patch=ip == num_pipeline_patch - 1,
                         )
 
                     if i != len(timesteps) - 1:
@@ -636,13 +666,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
 
                 if len(get_pp_group().recv_tasks_queue):
                     with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                        if is_pipeline_first_stage():
-                            if ip == 0:  # get the last patch
-                                get_pp_group().recv_next()
-                        else:
-                            get_pp_group().recv_next()  # add receive task, non-blocking
-
-                get_runtime_state().next_patch()
+                        get_pp_group().recv_next()  # add receive task, non-blocking
 
             if i == len(timesteps) - 1 or (
                 (i + num_pipeline_warmup_steps + 1) > num_warmup_steps
