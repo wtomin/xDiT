@@ -126,6 +126,11 @@ def is_pipeline_last_stage():
     return get_pipeline_parallel_rank() == (get_pipeline_parallel_world_size() - 1)
 
 
+def is_pipeline_intermediate_stage():
+    """Return True if in the last pipeline model parallel stage, False otherwise."""
+    return 0 < get_pipeline_parallel_rank() < (get_pipeline_parallel_world_size() - 1)
+
+
 # CFG
 def get_cfg_group() -> GroupCoordinator:
     assert (

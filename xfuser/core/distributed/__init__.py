@@ -8,6 +8,7 @@ from .parallel_state import (
     get_pipeline_parallel_rank,
     is_pipeline_first_stage,
     is_pipeline_last_stage,
+    is_pipeline_intermediate_stage,
     get_data_parallel_world_size,
     get_data_parallel_rank,
     is_dp_last_group,

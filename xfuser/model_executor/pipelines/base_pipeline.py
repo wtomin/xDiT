@@ -1,4 +1,5 @@
 from abc import ABCMeta, abstractmethod
+import math
 from functools import wraps
 from packaging import version
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -65,6 +66,36 @@ except:
     HAS_OF = False
 
 logger = init_logger(__name__)
+
+
+class TaylorSeer:
+    def __init__(self, max_order=3):
+        self.cache = [{}]
+        self.max_order = max_order
+
+    def update_taylor(self, feature, distance, patch_id: int = 0):
+        updated_cache = {0: feature}
+        cache = self.cache[patch_id]
+        for i in range(self.max_order):
+            if cache.get(i, None) is not None:
+                updated_cache[i + 1] = (updated_cache[i] - cache[i]) / distance
+
+        self.cache[patch_id] = updated_cache
+
+    def forecast(self, distance, patch_id: int = 0):
+        output = 0
+        cache = self.cache[patch_id]
+        for i in range(len(cache)):
+            output += (1 / math.factorial(i)) * cache[i] * (distance**i)
+        return output
+
+    def split_patches(self):
+        assert len(self.cache) == 1, "The latents have already been split into patches."
+        self.cache = [{k: split_v} for k, v in self.cache[0].items() for split_v in v.chunk(get_runtime_state().num_pipeline_patch, dim=-2)]
+
+    def clear_cache(self):
+        self.cache = [{}]
+
 
 class xFuserVAEWrapper:
     def __init__(
@@ -180,6 +211,8 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 pipeline.vae.to("cpu")  # VAE is not executed in the current worker
             elif not self.use_naive_forward():
                 pipeline.vae = self._convert_vae(vae)
+
+        self._prev_input_latents = TaylorSeer(max_order=3)     # TODO: move to `args`
 
         super().__init__(module=pipeline)
 
@@ -521,7 +554,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
 
         self.transformer._prev_residual = list(self.transformer._prev_residual.chunk(get_runtime_state().num_pipeline_patch, dim=1))
         if is_pipeline_last_stage():
-            self._prev_inputs = list(self._prev_inputs.chunk(get_runtime_state().num_pipeline_patch, dim=1))
+            self._prev_input_latents = list(self._prev_input_latents.chunk(get_runtime_state().num_pipeline_patch, dim=1))
 
         return patch_latents
 
