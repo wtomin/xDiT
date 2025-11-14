@@ -519,6 +519,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         else:
             patch_latents = list(latents.chunk(get_runtime_state().num_pipeline_patch, dim=1))
 
+        self.transformer._prev_residual = list(self.transformer._prev_residual.chunk(get_runtime_state().num_pipeline_patch, dim=1))
         if is_pipeline_last_stage():
             self._prev_inputs = list(self._prev_inputs.chunk(get_runtime_state().num_pipeline_patch, dim=1))
 

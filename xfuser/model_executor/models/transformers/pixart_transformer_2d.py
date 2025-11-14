@@ -40,6 +40,8 @@ class xFuserPixArtTransformer2DWrapper(xFuserTransformerBaseWrapper):
         attention_mask: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        use_cache: bool = False,
+        patch_idx: Optional[int] = None,
     ):
         """
         The [`PixArtTransformer2DModel`] forward method.
@@ -138,42 +140,53 @@ class xFuserPixArtTransformer2DWrapper(xFuserTransformerBaseWrapper):
             )
 
         # 2. Blocks
-        for i, block in enumerate(self.transformer_blocks):
-            if self.training and self.gradient_checkpointing:
+        if use_cache:
+            hidden_states += self._prev_residual[patch_idx]
 
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
+        else:
+            ori_hidden_states = hidden_states.clone()
 
-                    return custom_forward
+            for i, block in enumerate(self.transformer_blocks):
+                if self.training and self.gradient_checkpointing:
 
-                ckpt_kwargs: Dict[str, Any] = (
-                    {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    attention_mask,
-                    encoder_hidden_states,
-                    encoder_attention_mask,
-                    timestep,
-                    cross_attention_kwargs,
-                    None,
-                    **ckpt_kwargs,
-                )
+                    def create_custom_forward(module, return_dict=None):
+                        def custom_forward(*inputs):
+                            if return_dict is not None:
+                                return module(*inputs, return_dict=return_dict)
+                            else:
+                                return module(*inputs)
+
+                        return custom_forward
+
+                    ckpt_kwargs: Dict[str, Any] = (
+                        {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    )
+                    hidden_states = torch.utils.checkpoint.checkpoint(
+                        create_custom_forward(block),
+                        hidden_states,
+                        attention_mask,
+                        encoder_hidden_states,
+                        encoder_attention_mask,
+                        timestep,
+                        cross_attention_kwargs,
+                        None,
+                        **ckpt_kwargs,
+                    )
+                else:
+                    hidden_states = block(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_attention_mask=encoder_attention_mask,
+                        timestep=timestep,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        class_labels=None,
+                    )
+
+            if patch_idx is None:
+                self._prev_residual = hidden_states - ori_hidden_states
             else:
-                hidden_states = block(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=encoder_attention_mask,
-                    timestep=timestep,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    class_labels=None,
-                )
+                self._prev_residual[patch_idx] = hidden_states - ori_hidden_states
 
         # 3. Output
         # * only the last pp rank needs unpatchify

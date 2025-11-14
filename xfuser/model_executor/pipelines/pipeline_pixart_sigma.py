@@ -624,6 +624,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                             added_cond_kwargs=added_cond_kwargs,
                             t=t,
                             guidance_scale=guidance_scale,
+                            use_cache=True,
+                            patch_idx=patch_idx,
                         )
                     else:
                         if is_pipeline_last_stage():
@@ -637,6 +639,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                             added_cond_kwargs=added_cond_kwargs,
                             t=t,
                             guidance_scale=guidance_scale,
+                            patch_idx=patch_idx,
                         )
 
                 if is_pipeline_last_stage():
@@ -723,6 +726,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         added_cond_kwargs: Dict,
         t: Union[float, torch.Tensor],
         guidance_scale: float,
+        use_cache: bool = False,
+        patch_idx: Optional[int] = None,
     ):
         if is_pipeline_first_stage():
             latents = torch.cat(
@@ -754,6 +759,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             timestep=current_timestep,
             added_cond_kwargs=added_cond_kwargs,
             return_dict=False,
+            use_cache=use_cache,
+            patch_idx=patch_idx,
         )[0]
 
         # classifier free guidance
