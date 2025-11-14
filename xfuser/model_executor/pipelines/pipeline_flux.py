@@ -643,11 +643,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         patch_indices = np.roll(
             range(num_pipeline_patch), get_pipeline_parallel_rank()
         ).tolist()
-
-        # FIXME: delete these 2 lines - this is just for easier benchmarking
-        cached_patch = None
-        next_encoder_hidden_states = torch.zeros((latents.shape[0], 256, 3072)).to(latents)
-
         for i, t in enumerate(timesteps):
             if self.interrupt:
                 continue
@@ -690,19 +685,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             get_pp_group().get_pipeline_recv_data(idx=patch_idx)
                         )
 
-                        # FIXME: delete `cached_patch` - this is just for easier benchmarking
-                        if is_pipeline_last_stage() and ip == 1:
-                            cached_patch = patch_latents[patch_idx]
-
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
-                    # TODO: cache correction and delete `i == 0`
-                    if not is_pipeline_first_stage() and ip == 0 and i == 0:
+                    if not is_pipeline_first_stage() and ip == 0:
+                        # TODO: cache correction
                         pass
                     else:
                         patch_latents[patch_idx], next_encoder_hidden_states = (
                             self._backbone_forward(
-                                # FIXME: delete `cached_patch` - this is just for easier benchmarking
-                                latents=patch_latents[patch_idx] if not (is_pipeline_last_stage() and ip == 0) else cached_patch,
+                                latents=patch_latents[patch_idx],
                                 encoder_hidden_states=(
                                     prompt_embeds
                                     if is_pipeline_first_stage()
