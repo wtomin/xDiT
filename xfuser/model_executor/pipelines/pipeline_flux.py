@@ -535,6 +535,12 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             # else:
             #     guidance = None
 
+            if is_pipeline_last_stage():
+                self._prev_inputs = latents.clone()
+            self._prev_enc = (
+                None if is_pipeline_first_stage() else encoder_hidden_state.clone()
+            )
+
             latents, encoder_hidden_state = self._backbone_forward(
                 latents=latents,
                 encoder_hidden_states=(
@@ -549,7 +555,13 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
 
             if is_pipeline_last_stage():
                 latents_dtype = latents.dtype
-                latents = self._scheduler_step(latents, last_timestep_latents, t)
+                latents = self._scheduler_step(
+                    latents,
+                    last_timestep_latents,
+                    t,
+                    last_patch=get_runtime_state().pipeline_patch_idx
+                    == get_runtime_state().num_pipeline_patch - 1,
+                )
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -643,53 +655,90 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         patch_indices = np.roll(
             range(num_pipeline_patch), get_pipeline_parallel_rank()
         ).tolist()
+        get_runtime_state().set_patched_mode(
+            patch_mode=True, initial_patch_idx=patch_indices[0]
+        )
+        last_encoder_hidden_states = self._prev_enc
+
         for i, t in enumerate(timesteps):
             if self.interrupt:
                 continue
 
             # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {patch_indices}")
             # add communication queue
-            # `is_pipeline_first_stage() and i == 0` already has the input latents from the warmup stage
-            if not (is_pipeline_first_stage() and i == 0):
-                if is_pipeline_first_stage():
-                    get_pp_group().add_pipeline_recv_tasks(patch_indices)
-                else:
-                    get_pp_group().add_pipeline_recv_task(name="encoder_hidden_states")
-                    # later stages use cached first patch from previous timestep
-                    get_pp_group().add_pipeline_recv_tasks(patch_indices[1:])
-
+            if is_pipeline_first_stage() and i != len(timesteps) - 1:
+                # last stage sends and first stage receives patches in a different order
+                last_patch_indices = np.roll(
+                    np.roll(
+                        range(num_pipeline_patch),
+                        get_pipeline_parallel_world_size() - 1,
+                    ),
+                    i,
+                )
+                get_pp_group().add_pipeline_recv_tasks(last_patch_indices.tolist())
+            # later stages use cached first patch from previous timestep
+            elif not is_pipeline_first_stage():
+                get_pp_group().add_pipeline_recv_tasks(
+                    patch_indices[1 : get_pipeline_parallel_rank()]
+                )
+                get_pp_group().add_pipeline_recv_task(name="encoder_hidden_states")
+                get_pp_group().add_pipeline_recv_tasks(
+                    patch_indices[get_pipeline_parallel_rank() :]
+                )
             # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {get_pp_group().recv_tasks_queue}")
 
             for ip, patch_idx in enumerate(patch_indices):
+                get_runtime_state().next_patch(patch_idx)
+
                 if is_pipeline_last_stage():
                     last_patch_latents[patch_idx] = patch_latents[patch_idx]
 
                 # always re-use the initial patch from previous timestep / warmup step (except the first stage)
-                if (ip != 0 and not is_pipeline_first_stage()) or (
-                    is_pipeline_first_stage() and i != 0
-                ):
-                    with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                        if not len(get_pp_group().receiving_tasks):
-                            get_pp_group().recv_next()
-
-                        # receive `encoder_hidden_states` at a full computation (ip == 0 uses cache)
-                        if not is_pipeline_first_stage() and ip == 1:
+                with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
+                    if not is_pipeline_first_stage():
+                        if ip == get_pipeline_parallel_rank():
                             # blocking recv
                             last_encoder_hidden_states = (
                                 get_pp_group().get_pipeline_recv_data(
                                     name="encoder_hidden_states"
                                 )
                             )
+                        if ip > 0:
+                            # blocking recv
+                            patch_latents[patch_idx] = (
+                                get_pp_group().get_pipeline_recv_data(idx=patch_idx)
+                            )
+                    elif is_pipeline_first_stage() and i != 0:
                         # blocking recv
                         patch_latents[patch_idx] = (
                             get_pp_group().get_pipeline_recv_data(idx=patch_idx)
                         )
 
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
-                    if not is_pipeline_first_stage() and ip == 0:
-                        # TODO: cache correction
+                    if not is_pipeline_last_stage() and ip == num_pipeline_patch - 1:
+                        # TODO: correct cached patches
                         pass
+                    elif is_pipeline_last_stage() and ip == 0:
+                        patch_latents[patch_idx], next_encoder_hidden_states = (
+                            self._backbone_forward(
+                                latents=self._prev_inputs[patch_idx],
+                                encoder_hidden_states=(
+                                    prompt_embeds
+                                    if is_pipeline_first_stage()
+                                    else last_encoder_hidden_states
+                                ),
+                                pooled_prompt_embeds=pooled_prompt_embeds,
+                                text_ids=text_ids,
+                                latent_image_ids=patch_latent_image_ids[patch_idx],
+                                guidance=guidance,
+                                t=t,
+                            )
+                        )
                     else:
+                        if is_pipeline_last_stage():
+                            self._prev_inputs[patch_idx] = patch_latents[
+                                patch_idx
+                            ].clone()
                         patch_latents[patch_idx], next_encoder_hidden_states = (
                             self._backbone_forward(
                                 latents=patch_latents[patch_idx],
@@ -713,6 +762,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx],
                             last_patch_latents[patch_idx],
                             t,
+                            last_patch=ip == num_pipeline_patch - 1,
                         )
 
                         if latents.dtype != latents_dtype:
@@ -747,8 +797,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             )
                 else:
                     with nvtx.range(f"async_send_{i + num_warmup_steps}"):
-                        # send at ip == 0, receive at ip == 1
-                        if ip == 0:
+                        if ip == get_pipeline_parallel_rank():
                             get_pp_group().pipeline_isend(
                                 next_encoder_hidden_states, name="encoder_hidden_states"
                             )
@@ -760,16 +809,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
 
                 if len(get_pp_group().recv_tasks_queue):
                     with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
-                        if is_pipeline_first_stage():
+                        if (
+                            not is_pipeline_first_stage()
+                            and ip == get_pipeline_parallel_rank() - 1
+                        ):
+                            # encoder_hidden_states
                             get_pp_group().recv_next()
-                        else:
-                            # recv encoder_hidden_state
-                            if ip == 0:
-                                get_pp_group().recv_next()
-                            # recv latents
-                            get_pp_group().recv_next()
-
-                get_runtime_state().next_patch()
+                        # patch_latents
+                        get_pp_group().recv_next()
 
             if i == len(timesteps) - 1 or (
                 (i + num_pipeline_warmup_steps + 1) > num_warmup_steps
@@ -818,8 +865,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         num_pipeline_warmup_steps: int,
         latent_image_ids: torch.Tensor,
     ):
-        get_runtime_state().set_patched_mode(patch_mode=True)
-
         if is_pipeline_first_stage():
             # get latents computed in warmup stage
             # ignore latents after the last timestep
@@ -844,6 +889,11 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             latent_image_ids[start_idx:end_idx]
             for start_idx, end_idx in get_runtime_state().pp_patches_token_start_end_idx_global
         )
+
+        if is_pipeline_last_stage():
+            self._prev_inputs = list(
+                self._prev_inputs.chunk(get_runtime_state().num_pipeline_patch, dim=1)
+            )
 
         return patch_latents, patch_latent_image_ids
 
@@ -882,10 +932,12 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         noise_pred: torch.Tensor,
         latents: torch.Tensor,
         t: Union[float, torch.Tensor],
+        last_patch: bool = False,
     ):
         return self.scheduler.step(
             noise_pred,
             t,
             latents,
             return_dict=False,
+            last_patch=last_patch,
         )[0]
