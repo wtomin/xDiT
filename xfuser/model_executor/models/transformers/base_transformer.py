@@ -110,13 +110,9 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
         else:
             num_blocks_per_stage = sum(num_blocks_list) // pp_world_size
             remainder = sum(num_blocks_list) % pp_world_size
-            # give more blocks to the later stages as the first stage usually has more processing to do
-            stage_block_start_idx = pp_rank * num_blocks_per_stage + max(
-                0, pp_rank - (pp_world_size - remainder)
-            )
-            stage_block_end_idx = (pp_rank + 1) * num_blocks_per_stage + max(
-                0, (pp_rank + 1) - (pp_world_size - remainder)
-            )
+            # give more blocks to the earlier stages as the last stage doesn't reuse cache
+            stage_block_start_idx = pp_rank * num_blocks_per_stage + min(pp_rank, remainder)
+            stage_block_end_idx = (pp_rank + 1) * num_blocks_per_stage + min(pp_rank + 1, remainder)
 
         self.stage_info = StageInfo()
         for name, [blocks_start, blocks_end] in zip(

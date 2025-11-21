@@ -719,11 +719,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         )
 
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
-                    if is_pipeline_intermediate_stage() and ip == num_pipeline_patch - 1:
-                        # update with newly received patch
-                        self._prev_input_latents.update(patch_latents[patch_idx], distance=1, patch_id=patch_idx)
-                        # and correct inputs for `ip == 0` in advance
-                        patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
+                    # The last patch does not require calculation on any stage except the last
+                    if not is_pipeline_last_stage() and ip == num_pipeline_patch - 1:
+                        # first stage doesn't require correction as it always receives fresh patches
+                        if not is_pipeline_first_stage():
+                            # update with newly received patch
+                            self._prev_input_latents.update(patch_latents[patch_idx], distance=1, patch_id=patch_idx)
+                            # and correct inputs for `ip == 0` in advance
+                            patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
                     else:
                         # correct cached input to the last stage when `ip == 0`
                         if is_pipeline_last_stage() and ip == 0:
