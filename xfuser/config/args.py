@@ -114,6 +114,7 @@ class xFuserArgs:
     use_cache: bool = False
     use_teacache: bool = False
     use_fbcache: bool = False
+    use_taylorseer: bool = False
     use_fp8_t5_encoder: bool = False
 
     @staticmethod
@@ -166,6 +167,11 @@ class xFuserArgs:
             "--use_fbcache",
             action="store_true",
             help="Enable teacache to accelerate inference in a single card",
+        )
+        runtime_group.add_argument(
+            "--use_taylorseer",
+            action="store_true",
+            help="Enable TaylorSeer to correct cached latents.",
         )
 
         # Parallel arguments

@@ -75,13 +75,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         pretrained_model_name_or_path: Optional[Union[str, os.PathLike]],
         engine_config: EngineConfig,
         cache_args: Dict = {},
+        correction: bool = False,
         return_org_pipeline: bool = False,
         **kwargs,
     ):
         pipeline = FluxPipeline.from_pretrained(pretrained_model_name_or_path, **kwargs)
         if return_org_pipeline:
             return pipeline
-        return cls(pipeline, engine_config, cache_args)
+        return cls(pipeline, engine_config, cache_args, correction=correction)
 
     def prepare_run(
         self,
@@ -342,13 +343,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             # Use a null context manager
             profiler_context = contextlib.nullcontext()
 
+        self._prev_input_latents = self._correction_cls()
+
         # Reduce visual clutter
         with profiler_context as profiler:
             self.set_progress_bar_config(
                 disable=get_pipeline_parallel_world_size() > 1
                 and get_pipeline_parallel_rank() != 0
             )
-            self._prev_input_latents.clear_cache()
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 if (
                     get_pipeline_parallel_world_size() > 1
@@ -538,7 +540,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             #     guidance = None
 
             if not is_pipeline_first_stage():
-                self._prev_input_latents.update_taylor(latents, distance=1)
+                self._prev_input_latents.update(latents, distance=1)
             self._prev_enc = (
                 None if is_pipeline_first_stage() else encoder_hidden_state.clone()
             )
@@ -719,7 +721,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
                     if is_pipeline_intermediate_stage() and ip == num_pipeline_patch - 1:
                         # update with newly received patch
-                        self._prev_input_latents.update_taylor(patch_latents[patch_idx], distance=1, patch_id=patch_idx)
+                        self._prev_input_latents.update(patch_latents[patch_idx], distance=1, patch_id=patch_idx)
                         # and correct inputs for `ip == 0` in advance
                         patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
                     else:
@@ -728,7 +730,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                             patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
                         if not is_pipeline_first_stage():   # first stage doesn't do cache correction
                             # TODO: update with forecasted values?
-                            self._prev_input_latents.update_taylor(patch_latents[patch_idx], distance = 1, patch_id=patch_idx)
+                            self._prev_input_latents.update(patch_latents[patch_idx], distance = 1, patch_id=patch_idx)
 
                         patch_latents[patch_idx], next_encoder_hidden_states = (
                             self._backbone_forward(

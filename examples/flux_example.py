@@ -47,6 +47,7 @@ def main():
         cache_args=cache_args,
         torch_dtype=torch.bfloat16,
         text_encoder_2=text_encoder_2,
+        correction=engine_args.use_taylorseer,
     )
 
     if args.enable_sequential_cpu_offload:
@@ -89,7 +90,7 @@ def main():
         if pipe.is_dp_last_group():
             for i, image in enumerate(output.images):
                 image_rank = dp_group_index * dp_batch_size + i
-                image_name = f"flux_result_{parallel_info}_{image_rank}_tc_{engine_args.use_torch_compile}.png"
+                image_name = f"flux_result_{parallel_info}_{image_rank}_tc_{engine_args.use_torch_compile}_correction_{engine_args.use_taylorseer}.png"
                 image.save(f"./results/{image_name}")
                 print(f"image {i} saved to ./results/{image_name}")
 

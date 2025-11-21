@@ -1,34 +1,27 @@
 from abc import ABCMeta, abstractmethod
-import math
 from functools import wraps
 from packaging import version
-from typing import Callable, Dict, List, Optional, Tuple, Union
 import sys
-import torch
 import torch.distributed
-import torch.nn as nn
 
 from diffusers import DiffusionPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from distvae.modules.adapters.vae.decoder_adapters import DecoderAdapter
-from xfuser.core.distributed.group_coordinator import GroupCoordinator
+
+from xfuser.latents_correction import PatchReuse, TaylorSeer
 from xfuser.config.config import (
     EngineConfig,
     InputConfig,
 )
 from xfuser.core.distributed.parallel_state import get_tensor_model_parallel_world_size
-from xfuser.logger import init_logger
 from xfuser.core.distributed import (
     get_data_parallel_world_size,
-    get_sequence_parallel_world_size,
-    get_pipeline_parallel_world_size,
     get_classifier_free_guidance_world_size,
     get_classifier_free_guidance_rank,
     is_pipeline_first_stage,
     is_pipeline_last_stage,
     get_pp_group,
     get_world_group,
-    get_runtime_state,
     initialize_runtime_state,
     is_dp_last_group,
     get_dit_world_size,
@@ -40,7 +33,6 @@ from xfuser.envs import (
     get_device_name,
 )
 from xfuser.core.fast_attention import (
-    get_fast_attn_enable,
     initialize_fast_attn_state,
     fast_attention_compression,
 )
@@ -66,35 +58,6 @@ except:
     HAS_OF = False
 
 logger = init_logger(__name__)
-
-
-class TaylorSeer:
-    def __init__(self, max_order=3):
-        self.cache = [{}]
-        self.max_order = max_order
-
-    def update_taylor(self, feature, distance, patch_id: int = 0):
-        updated_cache = {0: feature}
-        cache = self.cache[patch_id]
-        for i in range(self.max_order):
-            if cache.get(i, None) is not None:
-                updated_cache[i + 1] = (updated_cache[i] - cache[i]) / distance
-
-        self.cache[patch_id] = updated_cache
-
-    def forecast(self, distance, patch_id: int = 0):
-        output = 0
-        cache = self.cache[patch_id]
-        for i in range(len(cache)):
-            output += (1 / math.factorial(i)) * cache[i] * (distance**i)
-        return output
-
-    def split_patches(self):
-        assert len(self.cache) == 1, "The latents have already been split into patches."
-        self.cache = [{k: split_v} for k, v in self.cache[0].items() for split_v in v.chunk(get_runtime_state().num_pipeline_patch, dim=-2)]
-
-    def clear_cache(self):
-        self.cache = [{}]
 
 
 class xFuserVAEWrapper:
@@ -178,7 +141,8 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         self,
         pipeline: DiffusionPipeline,
         engine_config: EngineConfig,
-        cache_args: Optional[Dict] = None,
+        cache_args: Optional[dict] = None,
+        correction: bool = False,
     ):
         self.module: DiffusionPipeline
         self.engine_config = engine_config
@@ -212,7 +176,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
             elif not self.use_naive_forward():
                 pipeline.vae = self._convert_vae(vae)
 
-        self._prev_input_latents = TaylorSeer(max_order=3)     # TODO: move to `args`
+        self._correction_cls = TaylorSeer if correction else PatchReuse
 
         super().__init__(module=pipeline)
 
@@ -281,7 +245,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                     (dp_group_rank + 1) * dp_group_batch_size, batch_size
                 )
                 prompt = prompt[start_batch_idx:end_batch_idx]
-                if isinstance(negative_prompt, List):
+                if isinstance(negative_prompt, list):
                     negative_prompt = negative_prompt[start_batch_idx:end_batch_idx]
                 kwargs["prompt"] = prompt
                 if "negative_prompt" in kwargs:
@@ -397,7 +361,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         initialize_fast_attn_state(pipeline=pipeline, single_config=engine_config.fast_attn_config)
 
     def _convert_transformer_backbone(
-        self, transformer: nn.Module, enable_torch_compile: bool, enable_onediff: bool, cache_args: Optional[Dict] = None,
+        self, transformer: nn.Module, enable_torch_compile: bool, enable_onediff: bool, cache_args: Optional[dict] = None,
     ):
         if (
             get_pipeline_parallel_world_size() == 1
