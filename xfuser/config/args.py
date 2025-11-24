@@ -66,7 +66,7 @@ class xFuserArgs:
     warmup_steps: int = 1
     # use_cuda_graph: bool = True
     use_parallel_vae: bool = False
-    # use_profiler: bool = False
+    use_profiler: bool = False
     use_torch_compile: bool = False
     use_onediff: bool = False
     # Parallel arguments
@@ -146,7 +146,7 @@ class xFuserArgs:
         )
         # runtime_group.add_argument("--use_cuda_graph", action="store_true")
         runtime_group.add_argument("--use_parallel_vae", action="store_true")
-        # runtime_group.add_argument("--use_profiler", action="store_true")
+        runtime_group.add_argument("--use_profiler", action="store_true")
         runtime_group.add_argument(
             "--use_torch_compile",
             action="store_true",
