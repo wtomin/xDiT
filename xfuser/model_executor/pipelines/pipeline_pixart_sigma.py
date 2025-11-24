@@ -1,6 +1,9 @@
 import os
 from typing import Dict, List, Tuple, Callable, Optional, Union
 
+import contextlib
+import datetime
+
 import torch
 import torch.distributed
 from diffusers import PixArtSigmaPipeline
@@ -12,12 +15,20 @@ from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import (
     retrieve_timesteps,
 )
 from diffusers.pipelines.pipeline_utils import ImagePipelineOutput
+from torch.profiler import (
+    profile,
+    tensorboard_trace_handler,
+    ProfilerActivity,
+    schedule,
+)
+import torch.cuda.nvtx as nvtx
 
 from xfuser.config import EngineConfig
 from xfuser.core.distributed import (
     is_dp_last_group,
     get_classifier_free_guidance_world_size,
     get_pipeline_parallel_world_size,
+    get_pipeline_parallel_rank,
     get_runtime_state,
     get_cfg_group,
     get_pp_group,
@@ -25,7 +36,6 @@ from xfuser.core.distributed import (
     get_sp_group,
     is_pipeline_first_stage,
     is_pipeline_last_stage,
-    get_world_group
 )
 from .base_pipeline import xFuserPipelineBaseWrapper
 from .register import xFuserPipelineWrapperRegister
@@ -78,6 +88,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         clean_caption: bool = True,
         use_resolution_binning: bool = True,
         max_sequence_length: int = 300,
+        enable_profiling: bool = False,
         **kwargs,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
@@ -278,70 +289,108 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         )
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
 
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            if (
-                get_pipeline_parallel_world_size() > 1
-                and len(timesteps) > num_pipeline_warmup_steps
-            ):
-                # * warmup stage
-                latents = self._sync_pipeline(
-                    latents=latents,
-                    prompt_embeds=prompt_embeds,
-                    prompt_attention_mask=prompt_attention_mask,
-                    guidance_scale=guidance_scale,
-                    timesteps=timesteps[:num_pipeline_warmup_steps],
-                    num_warmup_steps=num_warmup_steps,
-                    extra_step_kwargs=extra_step_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    progress_bar=progress_bar,
-                    callback=callback,
-                    callback_steps=callback_steps,
-                )
-                # * pipefusion stage
-                latents = self._async_pipeline(
-                    latents=latents,
-                    prompt_embeds=prompt_embeds,
-                    prompt_attention_mask=prompt_attention_mask,
-                    guidance_scale=guidance_scale,
-                    timesteps=timesteps[num_pipeline_warmup_steps:],
-                    num_warmup_steps=num_warmup_steps,
-                    extra_step_kwargs=extra_step_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    progress_bar=progress_bar,
-                    callback=callback,
-                    callback_steps=callback_steps,
-                )
-            else:
-                latents = self._sync_pipeline(
-                    latents=latents,
-                    prompt_embeds=prompt_embeds,
-                    prompt_attention_mask=prompt_attention_mask,
-                    guidance_scale=guidance_scale,
-                    timesteps=timesteps,
-                    num_warmup_steps=num_warmup_steps,
-                    extra_step_kwargs=extra_step_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    progress_bar=progress_bar,
-                    callback=callback,
-                    callback_steps=callback_steps,
-                    sync_only=True,
+        if enable_profiling:
+            profiler_context = profile(
+                activities=[ProfilerActivity.CUDA],
+                schedule=schedule(
+                    skip_first=num_pipeline_warmup_steps,
+                    wait=0,
+                    warmup=3,
+                    active=len(timesteps) - num_pipeline_warmup_steps - 3,
+                    repeat=1,
+                ),
+                on_trace_ready=tensorboard_trace_handler(
+                    f"./logs/{datetime.datetime.now().strftime('%Y%m%d_%H%M')}"
+                ),
+            )
+        else:
+            # Use a null context manager
+            profiler_context = contextlib.nullcontext()
+
+        # Reduce visual clutter
+        with profiler_context as profiler:
+            self.set_progress_bar_config(
+                disable=get_pipeline_parallel_world_size() > 1
+                and get_pipeline_parallel_rank() != 0
+            )
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                if (
+                    get_pipeline_parallel_world_size() > 1
+                    and len(timesteps) > num_pipeline_warmup_steps
+                ):
+                    # * warmup stage
+                    latents = self._sync_pipeline(
+                        latents=latents,
+                        prompt_embeds=prompt_embeds,
+                        prompt_attention_mask=prompt_attention_mask,
+                        guidance_scale=guidance_scale,
+                        timesteps=timesteps[:num_pipeline_warmup_steps],
+                        num_warmup_steps=num_warmup_steps,
+                        extra_step_kwargs=extra_step_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        progress_bar=progress_bar,
+                        callback=callback,
+                        callback_steps=callback_steps,
+                    )
+                    if enable_profiling:
+                        profiler.step()
+                    # * pipefusion stage
+                    latents = self._async_pipeline(
+                        latents=latents,
+                        prompt_embeds=prompt_embeds,
+                        prompt_attention_mask=prompt_attention_mask,
+                        guidance_scale=guidance_scale,
+                        timesteps=timesteps[num_pipeline_warmup_steps:],
+                        num_warmup_steps=num_warmup_steps,
+                        extra_step_kwargs=extra_step_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        progress_bar=progress_bar,
+                        callback=callback,
+                        callback_steps=callback_steps,
+                        profiler=profiler if enable_profiling else None,
+                    )
+                else:
+                    latents = self._sync_pipeline(
+                        latents=latents,
+                        prompt_embeds=prompt_embeds,
+                        prompt_attention_mask=prompt_attention_mask,
+                        guidance_scale=guidance_scale,
+                        timesteps=timesteps,
+                        num_warmup_steps=num_warmup_steps,
+                        extra_step_kwargs=extra_step_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        progress_bar=progress_bar,
+                        callback=callback,
+                        callback_steps=callback_steps,
+                        sync_only=True,
+                    )
+
+            if enable_profiling:
+                print(
+                    profiler.key_averages().table(
+                        sort_by="cuda_time_total", row_limit=10
+                    )
                 )
 
         # * 8. Decode latents (only the last rank in a dp group)
-        
+
         def vae_decode(latents):
             image = self.vae.decode(
                 latents / self.vae.config.scaling_factor, return_dict=False
             )[0]
             return image
+
         image = None
         if not output_type == "latent":
-            if get_runtime_state().runtime_config.use_parallel_vae and get_runtime_state().parallel_config.vae_parallel_size > 0: 
+            if (
+                get_runtime_state().runtime_config.use_parallel_vae
+                and get_runtime_state().parallel_config.vae_parallel_size > 0
+            ):
                 # VAE is loaded in another worker
                 latents = self.gather_latents_for_vae(latents)
                 if latents is not None:
                     latents = latents / self.vae.config.scaling_factor
-                self.send_to_vae_decode(latents) 
+                self.send_to_vae_decode(latents)
             else:
                 if get_runtime_state().runtime_config.use_parallel_vae:
                     latents = self.gather_broadcast_latents(latents)
@@ -349,7 +398,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 else:
                     if is_dp_last_group():
                         image = vae_decode(latents)
-            
+
         if self.is_dp_last_group():
             if not output_type == "latent":
                 if use_resolution_binning:
@@ -418,7 +467,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             elif is_pipeline_first_stage() and i == 0:
                 pass
             else:
-                latents = get_pp_group().pipeline_recv()
+                latents = get_pp_group().pipeline_recv()  # blocking recv
 
             latents = self._backbone_forward(
                 latents=latents,
@@ -444,7 +493,7 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
             if sync_only and is_pipeline_last_stage() and i == len(timesteps) - 1:
                 pass
             elif get_pipeline_parallel_world_size() > 1:
-                get_pp_group().pipeline_send(latents)
+                get_pp_group().pipeline_send(latents)  # blocking send
 
         if (
             sync_only
@@ -484,16 +533,18 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         progress_bar,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
+        profiler=None,
     ):
         if len(timesteps) == 0:
             return latents
         num_pipeline_patch = get_runtime_state().num_pipeline_patch
         num_pipeline_warmup_steps = get_runtime_state().runtime_config.warmup_steps
-        patch_latents = self._init_async_pipeline(
-            num_timesteps=len(timesteps),
-            latents=latents,
-            num_pipeline_warmup_steps=num_pipeline_warmup_steps,
-        )
+        with nvtx.range("async_init"):
+            patch_latents = self._init_async_pipeline(
+                num_timesteps=len(timesteps),
+                latents=latents,
+                num_pipeline_warmup_steps=num_pipeline_warmup_steps,
+            )
         last_patch_latents = (
             [None for _ in range(num_pipeline_patch)]
             if (is_pipeline_last_stage())
@@ -509,35 +560,46 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                 if is_pipeline_first_stage() and i == 0:
                     pass
                 else:
-                    if first_async_recv:
-                        get_pp_group().recv_next()
-                        first_async_recv = False
-                    patch_latents[patch_idx] = get_pp_group().get_pipeline_recv_data(
-                        idx=patch_idx
+                    with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
+                        if first_async_recv:
+                            get_pp_group().recv_next()  # add receive task, non-blocking
+                            first_async_recv = False
+                        patch_latents[
+                            patch_idx
+                        ] = get_pp_group().get_pipeline_recv_data(  # blocking recv
+                            idx=patch_idx
+                        )
+
+                with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
+                    patch_latents[patch_idx] = self._backbone_forward(
+                        latents=patch_latents[patch_idx],
+                        prompt_embeds=prompt_embeds,
+                        prompt_attention_mask=prompt_attention_mask,
+                        added_cond_kwargs=added_cond_kwargs,
+                        t=t,
+                        guidance_scale=guidance_scale,
                     )
-                patch_latents[patch_idx] = self._backbone_forward(
-                    latents=patch_latents[patch_idx],
-                    prompt_embeds=prompt_embeds,
-                    prompt_attention_mask=prompt_attention_mask,
-                    added_cond_kwargs=added_cond_kwargs,
-                    t=t,
-                    guidance_scale=guidance_scale,
-                )
+
                 if is_pipeline_last_stage():
-                    patch_latents[patch_idx] = self._scheduler_step(
-                        patch_latents[patch_idx],
-                        last_patch_latents[patch_idx],
-                        t,
-                        extra_step_kwargs,
-                    )
-                    if i != len(timesteps) - 1:
-                        get_pp_group().pipeline_isend(
+                    with nvtx.range(
+                        f"async_computation_scheduler_{i + num_warmup_steps}"
+                    ):
+                        patch_latents[patch_idx] = self._scheduler_step(
+                            patch_latents[patch_idx],
+                            last_patch_latents[patch_idx],
+                            t,
+                            extra_step_kwargs,
+                        )
+                    with nvtx.range(f"async_send_{i + num_warmup_steps}"):
+                        if i != len(timesteps) - 1:
+                            get_pp_group().pipeline_isend(  # non-blocking send
+                                patch_latents[patch_idx], segment_idx=patch_idx
+                            )
+                else:
+                    with nvtx.range(f"async_send_{i + num_warmup_steps}"):
+                        get_pp_group().pipeline_isend(  # non-blocking send
                             patch_latents[patch_idx], segment_idx=patch_idx
                         )
-                else:
-                    get_pp_group().pipeline_isend(
-                        patch_latents[patch_idx], segment_idx=patch_idx
-                    )
 
                 if is_pipeline_first_stage() and i == 0:
                     pass
@@ -545,7 +607,8 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                     if i == len(timesteps) - 1 and patch_idx == num_pipeline_patch - 1:
                         pass
                     else:
-                        get_pp_group().recv_next()
+                        with nvtx.range(f"async_recv_{i + num_warmup_steps}"):
+                            get_pp_group().recv_next()  # add receive task, non-blocking
 
                 get_runtime_state().next_patch()
 
@@ -563,6 +626,9 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
                         self.scheduler, "order", 1
                     )
                     callback(step_idx, t, patch_latents[patch_idx])
+
+            if profiler is not None:
+                profiler.step()
 
         latents = None
         if is_pipeline_last_stage():
