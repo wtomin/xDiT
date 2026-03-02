@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from typing import Any, Dict, List, Tuple, Callable, Optional, Union
+from typing import Any, Dict, List, Callable, Optional, Union, TYPE_CHECKING
 
 import contextlib
 import datetime
@@ -62,6 +62,9 @@ if is_torch_xla_available():
 else:
     XLA_AVAILABLE = False
 
+if TYPE_CHECKING:
+    from xfuser.latents_correction import PatchReuse
+
 
 logger = init_logger(__name__)
 
@@ -75,7 +78,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         pretrained_model_name_or_path: Optional[Union[str, os.PathLike]],
         engine_config: EngineConfig,
         cache_args: Dict = {},
-        correction: bool = False,
+        correction: "PatchReuse" = None,
         return_org_pipeline: bool = False,
         **kwargs,
     ):
@@ -343,7 +346,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             # Use a null context manager
             profiler_context = contextlib.nullcontext()
 
-        self._prev_input_latents = self._correction_cls()
+        self._prev_input_latents = self._correction.reset()
 
         # Reduce visual clutter
         with profiler_context as profiler:

@@ -3,6 +3,7 @@ from functools import wraps
 from packaging import version
 import sys
 import torch.distributed
+from typing import TYPE_CHECKING
 
 from diffusers import DiffusionPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
@@ -56,6 +57,10 @@ try:
     os.environ["NEXFORT_FX_FORCE_TRITON_SDPA"] = "1"
 except:
     HAS_OF = False
+
+if TYPE_CHECKING:
+    from xfuser.latents_correction import PatchReuse
+
 
 logger = init_logger(__name__)
 
@@ -142,7 +147,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         pipeline: DiffusionPipeline,
         engine_config: EngineConfig,
         cache_args: Optional[dict] = None,
-        correction: bool = False,
+        correction: "PatchReuse" = None,
     ):
         self.module: DiffusionPipeline
         self.engine_config = engine_config
@@ -176,7 +181,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
             elif not self.use_naive_forward():
                 pipeline.vae = self._convert_vae(vae)
 
-        self._correction_cls = TaylorSeer if correction else PatchReuse
+        self._correction = correction
 
         super().__init__(module=pipeline)
 

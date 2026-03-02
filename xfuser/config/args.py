@@ -115,6 +115,7 @@ class xFuserArgs:
     use_teacache: bool = False
     use_fbcache: bool = False
     use_taylorseer: bool = False
+    taylorseer_max_order: int = 3
     use_fp8_t5_encoder: bool = False
 
     @staticmethod
@@ -172,6 +173,12 @@ class xFuserArgs:
             "--use_taylorseer",
             action="store_true",
             help="Enable TaylorSeer to correct cached latents.",
+        )
+        runtime_group.add_argument(
+            "--taylorseer_max_order",
+            type=int,
+            default=3,
+            help="Maximum order of Taylor expansion. Default to 3.",
         )
 
         # Parallel arguments

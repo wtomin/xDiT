@@ -5,6 +5,7 @@ import torch.distributed
 from transformers import T5EncoderModel
 from xfuser import xFuserFluxPipeline, xFuserArgs
 from xfuser.config import FlexibleArgumentParser
+from xfuser.latents_correction import PatchReuse, TaylorSeer
 from xfuser.core.distributed import (
     get_world_group,
     get_data_parallel_rank,
@@ -18,6 +19,7 @@ from xfuser.core.distributed import (
 )
 from xfuser.model_executor.cache.diffusers_adapters import apply_cache_on_transformer
 
+
 def main():
     parser = FlexibleArgumentParser(description="xFuser Arguments")
     args = xFuserArgs.add_cli_args(parser).parse_args()
@@ -29,17 +31,20 @@ def main():
 
     if args.use_fp8_t5_encoder:
         from optimum.quanto import freeze, qfloat8, quantize
+
         logging.info(f"rank {local_rank} quantizing text encoder 2")
         quantize(text_encoder_2, weights=qfloat8)
         freeze(text_encoder_2)
 
     cache_args = {
-            "use_teacache": engine_args.use_teacache,
-            "use_fbcache": engine_args.use_fbcache,
-            "rel_l1_thresh": 0.12,
-            "return_hidden_states_first": False,
-            "num_steps": input_config.num_inference_steps,
-        }
+        "use_teacache": engine_args.use_teacache,
+        "use_fbcache": engine_args.use_fbcache,
+        "rel_l1_thresh": 0.12,
+        "return_hidden_states_first": False,
+        "num_steps": input_config.num_inference_steps,
+    }
+
+    correction = TaylorSeer(engine_args.taylorseer_max_order) if engine_args.use_taylorseer else PatchReuse()
 
     pipe = xFuserFluxPipeline.from_pretrained(
         pretrained_model_name_or_path=engine_config.model_config.model,
@@ -47,7 +52,7 @@ def main():
         cache_args=cache_args,
         torch_dtype=torch.bfloat16,
         text_encoder_2=text_encoder_2,
-        correction=engine_args.use_taylorseer,
+        correction=correction,
     )
 
     if args.enable_sequential_cpu_offload:

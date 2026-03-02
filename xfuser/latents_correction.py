@@ -11,6 +11,10 @@ class PatchReuse:
     def __init__(self):
         self.cache = [{}]
 
+    def reset(self) -> "PatchReuse":
+        self.cache = [{}]
+        return self
+
     def update(self, feature, patch_id: int = 0, **kwargs):
         self.cache[patch_id][0] = feature
 
