@@ -67,6 +67,7 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
         guidance: torch.Tensor = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         skip: bool = False,
+        correct: bool = False,
         return_dict: bool = True,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
         """
@@ -144,11 +145,12 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
             img_ids = img_ids[0]
 
         if skip:
-            # residual = self.correction.forecast()
-            # hidden_states += residual
-            hidden_states = self.correction.forecast()
+            self.correction.update("inputs", hidden_states)
         else:
-            # ori_hidden_states = hidden_states.clone()
+            if correct:
+                hidden_states = self.correction.forecast("inputs")
+            else:
+                self.correction.update("inputs", hidden_states)
 
             ids = torch.cat((txt_ids, img_ids), dim=0)
             image_rotary_emb = self.pos_embed(ids)
@@ -237,10 +239,6 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
 
             encoder_hidden_states = hidden_states[:, : encoder_hidden_states.shape[1], ...]
             hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
-
-            # residual = hidden_states - ori_hidden_states
-            # self.correction.update(residual)
-            self.correction.update(hidden_states)
 
         if self.stage_info.after_flags["single_transformer_blocks"]:
             hidden_states = self.norm_out(hidden_states, temb)

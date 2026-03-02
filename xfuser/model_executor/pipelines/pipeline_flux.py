@@ -725,10 +725,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         guidance=guidance,
                         t=t,
                         # The last patch does not require calculation on any stage except the last
-                        skip=(
-                            (is_pipeline_first_stage() and ip == num_pipeline_patch - 1)
-                            or (not is_pipeline_first_stage() and ip == 0)
-                        ),
+                        skip=(not is_pipeline_last_stage() and ip == (num_pipeline_patch - 1)),
+                        correct=(not is_pipeline_first_stage() and ip == 0)
                     )
 
                 if is_pipeline_last_stage():
@@ -872,6 +870,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         guidance,
         t: Union[float, torch.Tensor],
         skip: bool = False,
+        correct: bool = False,
     ):
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
         timestep = t.expand(latents.shape[0]).to(latents.dtype)
@@ -886,6 +885,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             img_ids=latent_image_ids,
             joint_attention_kwargs=self.joint_attention_kwargs,
             skip=skip,
+            correct=correct,
             return_dict=False,
         )[0]
         if self.engine_config.parallel_config.dit_parallel_size > 1:
