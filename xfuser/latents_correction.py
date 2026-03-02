@@ -6,6 +6,8 @@ from xfuser.core.distributed import get_runtime_state
 
 class PatchReuse:
     # Direct patch re-use without correction
+    # TODO: don't simply re-use - calculate and add residuals instead!
+
     def __init__(self):
         self.cache = [{}]
 
