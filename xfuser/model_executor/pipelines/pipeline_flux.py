@@ -43,7 +43,6 @@ from xfuser.core.distributed import (
     get_sp_group,
     is_pipeline_first_stage,
     is_pipeline_last_stage,
-    is_pipeline_intermediate_stage,
     is_dp_last_group,
     get_world_group,
     get_vae_parallel_group,
@@ -63,7 +62,7 @@ else:
     XLA_AVAILABLE = False
 
 if TYPE_CHECKING:
-    from xfuser.latents_correction import PatchReuse
+    from xfuser.model_executor.cache.correction import DirectReuse
 
 
 logger = init_logger(__name__)
@@ -78,7 +77,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         pretrained_model_name_or_path: Optional[Union[str, os.PathLike]],
         engine_config: EngineConfig,
         cache_args: Dict = {},
-        correction: "PatchReuse" = None,
+        correction: "DirectReuse | None" = None,
         return_org_pipeline: bool = False,
         **kwargs,
     ):
@@ -346,8 +345,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             # Use a null context manager
             profiler_context = contextlib.nullcontext()
 
-        self._prev_input_latents = self._correction.reset()
-
         # Reduce visual clutter
         with profiler_context as profiler:
             self.set_progress_bar_config(
@@ -542,8 +539,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             # else:
             #     guidance = None
 
-            if not is_pipeline_first_stage():
-                self._prev_input_latents.update(latents, distance=1)
             self._prev_enc = (
                 None if is_pipeline_first_stage() else encoder_hidden_state.clone()
             )
@@ -662,9 +657,6 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         patch_indices = np.roll(
             range(num_pipeline_patch), get_pipeline_parallel_rank()
         ).tolist()
-        get_runtime_state().set_patched_mode(
-            patch_mode=True, initial_patch_idx=patch_indices[0]
-        )
         last_encoder_hidden_states = self._prev_enc
 
         for i, t in enumerate(timesteps):
@@ -722,37 +714,22 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                         )
 
                 with nvtx.range(f"async_computation_{i + num_warmup_steps}"):
-                    # The last patch does not require calculation on any stage except the last
-                    if not is_pipeline_last_stage() and ip == num_pipeline_patch - 1:
-                        # first stage doesn't require correction as it always receives fresh patches
-                        if not is_pipeline_first_stage():
-                            # update with newly received patch
-                            self._prev_input_latents.update(patch_latents[patch_idx], distance=1, patch_id=patch_idx)
-                            # and correct inputs for `ip == 0` in advance
-                            patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
-                    else:
-                        # correct cached input to the last stage when `ip == 0`
-                        if is_pipeline_last_stage() and ip == 0:
-                            patch_latents[patch_idx] = self._prev_input_latents.forecast(distance=1, patch_id=patch_idx)
-                        if not is_pipeline_first_stage():   # first stage doesn't do cache correction
-                            # TODO: update with forecasted values?
-                            self._prev_input_latents.update(patch_latents[patch_idx], distance = 1, patch_id=patch_idx)
-
-                        patch_latents[patch_idx], next_encoder_hidden_states = (
-                            self._backbone_forward(
-                                latents=patch_latents[patch_idx],
-                                encoder_hidden_states=(
-                                    prompt_embeds
-                                    if is_pipeline_first_stage()
-                                    else last_encoder_hidden_states
-                                ),
-                                pooled_prompt_embeds=pooled_prompt_embeds,
-                                text_ids=text_ids,
-                                latent_image_ids=patch_latent_image_ids[patch_idx],
-                                guidance=guidance,
-                                t=t,
-                            )
-                        )
+                    patch_latents[patch_idx], next_encoder_hidden_states = self._backbone_forward(
+                        latents=patch_latents[patch_idx],
+                        encoder_hidden_states=(
+                            prompt_embeds if is_pipeline_first_stage() else last_encoder_hidden_states
+                        ),
+                        pooled_prompt_embeds=pooled_prompt_embeds,
+                        text_ids=text_ids,
+                        latent_image_ids=patch_latent_image_ids[patch_idx],
+                        guidance=guidance,
+                        t=t,
+                        # The last patch does not require calculation on any stage except the last
+                        skip=(
+                            (is_pipeline_first_stage() and ip == num_pipeline_patch - 1)
+                            or (not is_pipeline_first_stage() and ip == 0)
+                        ),
+                    )
 
                 if is_pipeline_last_stage():
                     with nvtx.range(f"async_scheduler_{i + num_warmup_steps}"):
@@ -864,6 +841,8 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         num_pipeline_warmup_steps: int,
         latent_image_ids: torch.Tensor,
     ):
+        get_runtime_state().set_patched_mode(patch_mode=True)
+
         if is_pipeline_first_stage():
             # get latents computed in warmup stage
             # ignore latents after the last timestep
@@ -872,26 +851,14 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                 if num_pipeline_warmup_steps > 0
                 else latents
             )
-            patch_latents = list(
-                latents.split(get_runtime_state().pp_patches_token_num, dim=-2)
-            )
-        elif is_pipeline_last_stage():
-            patch_latents = list(
-                latents.split(get_runtime_state().pp_patches_token_num, dim=-2)
-            )
-        else:
-            # forecast for intermediate stages in advance
-            latents = self._prev_input_latents.forecast(distance=1)
-            patch_latents = list(
-                latents.split(get_runtime_state().pp_patches_token_num, dim=-2)
-            )
+        patch_latents = list(
+            latents.split(get_runtime_state().pp_patches_token_num, dim=-2)
+        )
 
         patch_latent_image_ids = list(
             latent_image_ids[start_idx:end_idx]
             for start_idx, end_idx in get_runtime_state().pp_patches_token_start_end_idx_global
         )
-
-        self._prev_input_latents.split_patches()
 
         return patch_latents, patch_latent_image_ids
 
@@ -904,6 +871,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
         latent_image_ids,
         guidance,
         t: Union[float, torch.Tensor],
+        skip: bool = False,
     ):
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
         timestep = t.expand(latents.shape[0]).to(latents.dtype)
@@ -917,6 +885,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
             txt_ids=text_ids,
             img_ids=latent_image_ids,
             joint_attention_kwargs=self.joint_attention_kwargs,
+            skip=skip,
             return_dict=False,
         )[0]
         if self.engine_config.parallel_config.dit_parallel_size > 1:

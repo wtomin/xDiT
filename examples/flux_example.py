@@ -5,7 +5,7 @@ import torch.distributed
 from transformers import T5EncoderModel
 from xfuser import xFuserFluxPipeline, xFuserArgs
 from xfuser.config import FlexibleArgumentParser
-from xfuser.latents_correction import PatchReuse, TaylorSeer
+from xfuser.model_executor.cache.correction import DirectReuse, TaylorSeer
 from xfuser.core.distributed import (
     get_world_group,
     get_data_parallel_rank,
@@ -44,7 +44,7 @@ def main():
         "num_steps": input_config.num_inference_steps,
     }
 
-    correction = TaylorSeer(engine_args.taylorseer_max_order) if engine_args.use_taylorseer else PatchReuse()
+    correction = TaylorSeer(engine_args.taylorseer_max_order) if engine_args.use_taylorseer else DirectReuse()
 
     pipe = xFuserFluxPipeline.from_pretrained(
         pretrained_model_name_or_path=engine_config.model_config.model,

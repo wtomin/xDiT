@@ -2,6 +2,7 @@ from typing import Optional, Dict, Any, Union
 import torch
 import torch.distributed
 import torch.nn as nn
+from typing import TYPE_CHECKING
 
 from diffusers.models.embeddings import PatchEmbed
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
@@ -26,9 +27,13 @@ from xfuser.model_executor.models.transformers.register import (
 from xfuser.model_executor.models.transformers.base_transformer import (
     xFuserTransformerBaseWrapper,
 )
+from diffusers.models.attention import FeedForward
+
+if TYPE_CHECKING:
+    from xfuser.model_executor.cache.correction import DirectReuse
+
 
 logger = init_logger(__name__)
-from diffusers.models.attention import FeedForward
 
 
 @xFuserTransformerWrappersRegister.register(FluxTransformer2DModel)
@@ -36,6 +41,7 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
     def __init__(
         self,
         transformer: FluxTransformer2DModel,
+        correction: "DirectReuse | None" = None,
     ):
         super().__init__(
             transformer=transformer,
@@ -44,6 +50,7 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
             ),
             submodule_name_to_wrap=["attn"],
             transformer_blocks_name=["transformer_blocks", "single_transformer_blocks"],
+            correction=correction,
         )
         self.encoder_hidden_states_cache = [
             None for _ in range(len(self.transformer_blocks))
@@ -59,6 +66,7 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
         txt_ids: torch.Tensor = None,
         guidance: torch.Tensor = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+        skip: bool = False,
         return_dict: bool = True,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
         """
@@ -79,6 +87,7 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
                 A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
                 `self.processor` in
                 [diffusers.models.attention_processor](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py).
+            skip (`bool`): Whether to skip computation and re-use residuals from the previous timestep.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~models.transformer_2d.Transformer2DModelOutput`] instead of a plain
                 tuple.
@@ -134,93 +143,104 @@ class xFuserFluxTransformer2DWrapper(xFuserTransformerBaseWrapper):
             )
             img_ids = img_ids[0]
 
-        ids = torch.cat((txt_ids, img_ids), dim=0)
-        image_rotary_emb = self.pos_embed(ids)
+        if skip:
+            # residual = self.correction.forecast()
+            # hidden_states += residual
+            hidden_states = self.correction.forecast()
+        else:
+            # ori_hidden_states = hidden_states.clone()
 
-        for index_block, block in enumerate(self.transformer_blocks):
-            if self.training and self.gradient_checkpointing:
+            ids = torch.cat((txt_ids, img_ids), dim=0)
+            image_rotary_emb = self.pos_embed(ids)
 
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
+            for index_block, block in enumerate(self.transformer_blocks):
+                if self.training and self.gradient_checkpointing:
 
-                    return custom_forward
+                    def create_custom_forward(module, return_dict=None):
+                        def custom_forward(*inputs):
+                            if return_dict is not None:
+                                return module(*inputs, return_dict=return_dict)
+                            else:
+                                return module(*inputs)
 
-                ckpt_kwargs: Dict[str, Any] = (
-                    {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                )
-                encoder_hidden_states, hidden_states = (
-                    torch.utils.checkpoint.checkpoint(
+                        return custom_forward
+
+                    ckpt_kwargs: Dict[str, Any] = (
+                        {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    )
+                    encoder_hidden_states, hidden_states = (
+                        torch.utils.checkpoint.checkpoint(
+                            create_custom_forward(block),
+                            hidden_states,
+                            encoder_hidden_states,
+                            temb,
+                            image_rotary_emb,
+                            **ckpt_kwargs,
+                        )
+                    )
+
+                else:
+                    encoder_hidden_states, hidden_states = block(
+                        hidden_states=hidden_states,
+                        encoder_hidden_states=encoder_hidden_states,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                    )
+
+                # controlnet residual
+                # if controlnet_block_samples is not None:
+                #     interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                #     interval_control = int(np.ceil(interval_control))
+                #     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
+
+            # if self.stage_info.after_flags["transformer_blocks"]:
+            hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+
+            for index_block, block in enumerate(self.single_transformer_blocks):
+                if self.training and self.gradient_checkpointing:
+
+                    def create_custom_forward(module, return_dict=None):
+                        def custom_forward(*inputs):
+                            if return_dict is not None:
+                                return module(*inputs, return_dict=return_dict)
+                            else:
+                                return module(*inputs)
+
+                        return custom_forward
+
+                    ckpt_kwargs: Dict[str, Any] = (
+                        {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                    )
+                    hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
                         hidden_states,
-                        encoder_hidden_states,
                         temb,
                         image_rotary_emb,
                         **ckpt_kwargs,
                     )
-                )
 
-            else:
-                encoder_hidden_states, hidden_states = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                )
+                else:
+                    hidden_states = block(
+                        hidden_states=hidden_states,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                    )
 
-            # controlnet residual
-            # if controlnet_block_samples is not None:
-            #     interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
-            #     interval_control = int(np.ceil(interval_control))
-            #     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
+                # controlnet residual
+                # if controlnet_single_block_samples is not None:
+                #     interval_control = len(self.single_transformer_blocks) / len(controlnet_single_block_samples)
+                #     interval_control = int(np.ceil(interval_control))
+                #     hidden_states[:, encoder_hidden_states.shape[1] :, ...] = (
+                #         hidden_states[:, encoder_hidden_states.shape[1] :, ...]
+                #         + controlnet_single_block_samples[index_block // interval_control]
+                #     )
 
-        # if self.stage_info.after_flags["transformer_blocks"]:
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+            encoder_hidden_states = hidden_states[:, : encoder_hidden_states.shape[1], ...]
+            hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
-        for index_block, block in enumerate(self.single_transformer_blocks):
-            if self.training and self.gradient_checkpointing:
-
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
-
-                    return custom_forward
-
-                ckpt_kwargs: Dict[str, Any] = (
-                    {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                )
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    **ckpt_kwargs,
-                )
-
-            else:
-                hidden_states = block(
-                    hidden_states=hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                )
-
-            # controlnet residual
-            # if controlnet_single_block_samples is not None:
-            #     interval_control = len(self.single_transformer_blocks) / len(controlnet_single_block_samples)
-            #     interval_control = int(np.ceil(interval_control))
-            #     hidden_states[:, encoder_hidden_states.shape[1] :, ...] = (
-            #         hidden_states[:, encoder_hidden_states.shape[1] :, ...]
-            #         + controlnet_single_block_samples[index_block // interval_control]
-            #     )
-
-        encoder_hidden_states = hidden_states[:, : encoder_hidden_states.shape[1], ...]
-        hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
+            # residual = hidden_states - ori_hidden_states
+            # self.correction.update(residual)
+            self.correction.update(hidden_states)
 
         if self.stage_info.after_flags["single_transformer_blocks"]:
             hidden_states = self.norm_out(hidden_states, temb)

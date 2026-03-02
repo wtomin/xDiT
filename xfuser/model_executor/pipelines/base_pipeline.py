@@ -9,7 +9,6 @@ from diffusers import DiffusionPipeline
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from distvae.modules.adapters.vae.decoder_adapters import DecoderAdapter
 
-from xfuser.latents_correction import PatchReuse, TaylorSeer
 from xfuser.config.config import (
     EngineConfig,
     InputConfig,
@@ -59,7 +58,7 @@ except:
     HAS_OF = False
 
 if TYPE_CHECKING:
-    from xfuser.latents_correction import PatchReuse
+    from xfuser.model_executor.cache.correction import DirectReuse
 
 
 logger = init_logger(__name__)
@@ -147,7 +146,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         pipeline: DiffusionPipeline,
         engine_config: EngineConfig,
         cache_args: Optional[dict] = None,
-        correction: "PatchReuse" = None,
+        correction: "DirectReuse | None" = None,
     ):
         self.module: DiffusionPipeline
         self.engine_config = engine_config
@@ -168,6 +167,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 enable_torch_compile=engine_config.runtime_config.use_torch_compile,
                 enable_onediff=engine_config.runtime_config.use_onediff,
                 cache_args=cache_args,
+                correction=correction,
             )
         elif unet is not None:
             pipeline.unet = self._convert_unet_backbone(unet)
@@ -180,8 +180,6 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
                 pipeline.vae.to("cpu")  # VAE is not executed in the current worker
             elif not self.use_naive_forward():
                 pipeline.vae = self._convert_vae(vae)
-
-        self._correction = correction
 
         super().__init__(module=pipeline)
 
@@ -366,7 +364,12 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         initialize_fast_attn_state(pipeline=pipeline, single_config=engine_config.fast_attn_config)
 
     def _convert_transformer_backbone(
-        self, transformer: nn.Module, enable_torch_compile: bool, enable_onediff: bool, cache_args: Optional[dict] = None,
+        self,
+        transformer: nn.Module,
+        enable_torch_compile: bool,
+        enable_onediff: bool,
+        cache_args: Optional[dict] = None,
+        correction: "DirectReuse | None" = None,
     ):
         if (
             get_pipeline_parallel_world_size() == 1
@@ -382,7 +385,7 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         else:
             logger.info("Transformer backbone found, paralleling transformer...")
             wrapper = xFuserTransformerWrappersRegister.get_wrapper(transformer)
-            transformer = wrapper(transformer)
+            transformer = wrapper(transformer, correction=correction)
 
         if enable_torch_compile and enable_onediff:
             logger.warning(
@@ -503,6 +506,8 @@ class xFuserPipelineBaseWrapper(xFuserBaseWrapper, metaclass=ABCMeta):
         latents: torch.Tensor,
         num_pipeline_warmup_steps: int,
     ):
+        get_runtime_state().set_patched_mode(patch_mode=True)
+
         if is_pipeline_first_stage():
             # get latents computed in warmup stage
             # ignore latents after the last timestep

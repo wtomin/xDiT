@@ -233,9 +233,9 @@ class DiTRuntimeState(RuntimeState):
         self.backbone_inner_dim = backbone_inner_dim
         self.backbone_in_channel = backbone_in_channel
 
-    def set_patched_mode(self, patch_mode: bool, initial_patch_idx: int = 0):
+    def set_patched_mode(self, patch_mode: bool):
         self.patch_mode = patch_mode
-        self.pipeline_patch_idx = initial_patch_idx
+        self.pipeline_patch_idx = 0
 
     def next_patch(self, patch_idx: int | None = None):
         if self.patch_mode:

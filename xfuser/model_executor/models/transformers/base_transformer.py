@@ -1,6 +1,6 @@
 from abc import abstractmethod, ABCMeta
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple, Type, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
@@ -16,6 +16,9 @@ from xfuser.core.fast_attention import get_fast_attn_enable
 from xfuser.core.distributed.runtime_state import get_runtime_state
 from xfuser.logger import init_logger
 from xfuser.model_executor.models import xFuserModelBaseWrapper
+
+if TYPE_CHECKING:
+    from xfuser.model_executor.cache.correction import DirectReuse
 
 logger = init_logger(__name__)
 
@@ -34,6 +37,7 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
         submodule_name_to_wrap: List = [],
         submodule_addition_args: Dict = {},
         transformer_blocks_name: List[str] = ["transformer_blocks"],
+        correction: "DirectReuse | None" = None,
     ):
         self.stage_info = None
         transformer = self._convert_transformer_for_parallel(
@@ -44,6 +48,7 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
             transformer_blocks_name=transformer_blocks_name,
         )
         super().__init__(module=transformer)
+        self.correction = correction
 
     def _convert_transformer_for_parallel(
         self,
@@ -110,9 +115,13 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
         else:
             num_blocks_per_stage = sum(num_blocks_list) // pp_world_size
             remainder = sum(num_blocks_list) % pp_world_size
-            # give more blocks to the earlier stages as the last stage doesn't reuse cache
-            stage_block_start_idx = pp_rank * num_blocks_per_stage + min(pp_rank, remainder)
-            stage_block_end_idx = (pp_rank + 1) * num_blocks_per_stage + min(pp_rank + 1, remainder)
+            # give more blocks to the later stages as the first stage usually has more processing to do
+            stage_block_start_idx = pp_rank * num_blocks_per_stage + max(
+                0, pp_rank - (pp_world_size - remainder)
+            )
+            stage_block_end_idx = (pp_rank + 1) * num_blocks_per_stage + max(
+                0, (pp_rank + 1) - (pp_world_size - remainder)
+            )
 
         self.stage_info = StageInfo()
         for name, [blocks_start, blocks_end] in zip(

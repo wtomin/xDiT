@@ -574,9 +574,6 @@ class xFuserPixArtSigmaPipeline(xFuserPipelineBaseWrapper):
         patch_indices = np.roll(
             range(num_pipeline_patch), get_pipeline_parallel_rank()
         ).tolist()
-        get_runtime_state().set_patched_mode(
-            patch_mode=True, initial_patch_idx=patch_indices[0]
-        )
 
         for i, t in enumerate(timesteps):
             # logger.info(f"Step {i} Pipeline rank {get_pipeline_parallel_rank()}: {patch_indices}")

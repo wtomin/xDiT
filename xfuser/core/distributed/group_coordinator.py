@@ -914,16 +914,6 @@ class PipelineGroupCoordinator(GroupCoordinator):
     def pipeline_send(
         self, tensor: torch.Tensor, name: str = "latent", segment_idx: int = -1
     ) -> None:
-        """
-        Send a tensor to the next pipeline stage in a **blocking** manner.
-
-        This is a **blocking** operation that will wait until the tensor is fully sent
-        to the next rank before returning. The method performs the following steps:
-        1. Ensures the tensor is contiguous in memory
-        2. Validates and initializes the send buffer metadata if needed
-        3. Posts an asynchronous send operation
-        4. Blocks until the send completes
-        """
         tensor = tensor.contiguous()
         self._check_shape_and_buffer(
             tensor_send_to_next=tensor, name=name, segment_idx=segment_idx
@@ -933,20 +923,6 @@ class PipelineGroupCoordinator(GroupCoordinator):
     def pipeline_isend(
         self, tensor: torch.Tensor, name: str = "latent", segment_idx: int = -1
     ) -> None:
-        """
-        Send a tensor to the next pipeline stage in a **non-blocking** manner.
-
-        This is a **non-blocking** operation that initiates an asynchronous send operation
-        and returns immediately without waiting for the data transfer to complete. Unlike
-        `pipeline_send()`, this method does not block the calling thread, allowing computation
-        to overlap with communication for better performance.
-
-        The method performs the following steps:
-        1. Ensures the tensor is contiguous in memory
-        2. Validates and initializes the send buffer metadata if needed
-        3. Posts an asynchronous send operation
-        4. Returns immediately without waiting for send completion
-        """
         tensor = tensor.contiguous()
         self._check_shape_and_buffer(
             tensor_send_to_next=tensor, name=name, segment_idx=segment_idx
@@ -955,16 +931,6 @@ class PipelineGroupCoordinator(GroupCoordinator):
         # logger.info(f"Step {step} Rank {self.rank}: Sent {name} segment {segment_idx} to rank {self.next_rank}")
 
     def pipeline_recv(self, idx: int = -1, name: str = "latent") -> torch.Tensor:
-        """
-        Receive a tensor from the previous pipeline stage in a thread **blocking** manner.
-
-        This is a **blocking** operation that will wait until the tensor is fully received
-        from the previous rank before returning. The method performs the following steps:
-        1. Validates and initializes the receive buffer if needed
-        2. Posts an asynchronous receive operation
-        3. Blocks until the receive completes
-        4. Returns the received tensor from the buffer
-        """
         name = name or "latent"
         self._check_shape_and_buffer(recv_prev=True, name=name, segment_idx=idx)
         self._pipeline_irecv(self.recv_buffer[name][idx]).wait()
@@ -980,42 +946,6 @@ class PipelineGroupCoordinator(GroupCoordinator):
         self.recv_tasks_queue.extend([(name or "latent", i) for i, name in zip(idx, names)])
 
     def recv_next(self):
-        """
-        Post a **non-blocking** receive operation for the next tensor in the receive queue.
-
-        This method is **non-blocking** - it initiates an asynchronous receive operation
-        and returns immediately without waiting for the data transfer to complete. The
-        actual tensor data can be retrieved later by calling `get_pipeline_recv_data()`.
-
-        The method performs the following steps:
-        1. Retrieves the next task (name, idx) from the receive tasks queue
-        2. Validates and initializes the receive buffer if needed
-        3. Posts an asynchronous irecv operation to receive data from the previous pipeline stage
-        4. Stores the receive handle along with task metadata for later synchronization
-        5. Returns immediately without blocking
-
-        Workflow:
-            ```python
-            # Step 1: Add tasks to the queue
-            coordinator.add_pipeline_recv_task(idx=0, name="latent")
-            coordinator.add_pipeline_recv_task(idx=1, name="latent")
-
-            # Step 2: Post non-blocking receive operations
-            coordinator.recv_next()  # Posts irecv for task 0
-            coordinator.recv_next()  # Posts irecv for task 1
-
-            # Step 3: Do other work while data is being transferred
-            # ... computation ...
-
-            # Step 4: Wait for and retrieve the received data
-            data0 = coordinator.get_pipeline_recv_data(idx=0, name="latent")  # Blocks until complete
-            data1 = coordinator.get_pipeline_recv_data(idx=1, name="latent")  # Blocks until complete
-            ```
-
-        Raises:
-            ValueError: If the receive tasks queue is empty (no tasks have been added
-                       via `add_pipeline_recv_task()`).
-        """
         if len(self.recv_tasks_queue) == 0:
             raise ValueError("No more tasks to receive")
         elif len(self.recv_tasks_queue) > 0:
@@ -1031,32 +961,6 @@ class PipelineGroupCoordinator(GroupCoordinator):
     def get_pipeline_recv_data(
         self, idx: int = -1, name: str = "latent"
     ) -> torch.Tensor:
-        """
-        Wait for and retrieve a specific tensor that was previously posted for asynchronous reception.
-
-        This is a **blocking** operation that will wait until the specified tensor is fully received
-        from the previous pipeline stage before returning. This method must be called after
-        `add_pipeline_recv_task()` and `recv_next()` have been used to post the asynchronous
-        receive operation.
-
-        The method performs the following steps:
-        1. Retrieves the next receiving task from the internal queue (FIFO order)
-        2. Blocks until the asynchronous receive operation completes
-        3. Validates that the received tensor matches the requested name and index
-        4. Returns the received tensor from the buffer
-
-        Args:
-            idx (int, optional): The segment index of the tensor to retrieve. Defaults to -1.
-            name (str, optional): The name identifier of the tensor to retrieve. Defaults to "latent".
-
-        Returns:
-            torch.Tensor: The received tensor from the previous pipeline stage.
-
-        Raises:
-            AssertionError: If no receiving tasks are in the queue (must call `add_pipeline_recv_task()`
-                           and `recv_next()` first).
-            AssertionError: If the received tensor does not match the requested name and idx parameters.
-        """
         assert (
             name in self.receiving_tasks and idx in self.receiving_tasks[name]
         ), "No tasks to receive, call add_pipeline_recv_task first"
