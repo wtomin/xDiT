@@ -330,7 +330,7 @@ class xFuserFluxPipeline(xFuserPipelineBaseWrapper):
                     repeat=1,
                 ),
                 on_trace_ready=tensorboard_trace_handler(
-                    f"./logs/{datetime.datetime.now().strftime('%Y%m%d_%H%M')}"
+                    f"./logs/pipefusion/flux/pp{get_pp_group().world_size}/{datetime.datetime.now().strftime('%Y%m%d_%H%M')}"
                 ),
             )
         else:

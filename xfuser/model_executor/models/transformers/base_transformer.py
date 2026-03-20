@@ -108,14 +108,14 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
             stage_block_end_idx = sum(attn_layer_num_for_pp[: pp_rank + 1])
 
         else:
-            num_blocks_per_stage = (
-                sum(num_blocks_list) + pp_world_size - 1
-            ) // pp_world_size
-            stage_block_start_idx = pp_rank * num_blocks_per_stage
-            stage_block_end_idx = min(
-                (pp_rank + 1) * num_blocks_per_stage,
-                sum(num_blocks_list),
-            )
+            num_blocks_per_stage = sum(num_blocks_list)
+            num_per_stage = num_blocks_per_stage // pp_world_size
+            remainder = num_blocks_per_stage % pp_world_size
+            # Give more blocks to earlier stages
+            stage_block_start_idx = pp_rank * num_per_stage + min(pp_rank, remainder)
+            stage_block_end_idx = (pp_rank + 1) * num_per_stage + min(pp_rank + 1, remainder)
+
+        logger.info(f"PP rank {pp_rank}: {stage_block_start_idx=}, {stage_block_end_idx=}")
 
         self.stage_info = StageInfo()
         for name, [blocks_start, blocks_end] in zip(
