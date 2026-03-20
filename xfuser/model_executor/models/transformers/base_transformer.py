@@ -119,6 +119,8 @@ class xFuserTransformerBaseWrapper(xFuserModelBaseWrapper, metaclass=ABCMeta):
             stage_block_start_idx = pp_rank * num_blocks_per_stage + min(pp_rank, remainder)
             stage_block_end_idx = (pp_rank + 1) * num_blocks_per_stage + min(pp_rank + 1, remainder)
 
+        logger.info(f"PP rank {pp_rank}: {stage_block_start_idx=}, {stage_block_end_idx=}")
+
         self.stage_info = StageInfo()
         for name, [blocks_start, blocks_end] in zip(
             self.blocks_idx.keys(), self.blocks_idx.values()
